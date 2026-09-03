@@ -5,6 +5,7 @@ services:
     image: docker.io/technitium/dns-server:15.4.0
     container_name: technitium
     hostname: dns.home.arpa
+    network_mode: bridge
     ports:
       - "53:53/tcp"
       - "53:53/udp"

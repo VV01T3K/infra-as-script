@@ -122,8 +122,8 @@
           autoSync: false
           syncInterval: 5
           syncDirectory: true
-          pullImageAfterSync: false
-          redeployAfterSync: false
+          pullImageAfterSync: true
+          redeployAfterSync: true
         return_content: true
         status_code: 200
       register: created_sync
@@ -165,17 +165,16 @@
       failed_when: removed_old_container.rc not in [0, 1]
       when: old_technitium_quadlet.stat.exists
 
-    - name: Run the initial Technitium Git sync
+    - name: Sync Technitium from Git now
       ansible.builtin.uri:
         url: "{{ arcane_api }}/environments/{{ arcane_environment_id }}/gitops-syncs/{{ technitium_sync_id }}/sync"
         method: POST
         headers:
           X-Api-Key: "{{ arcane_api_key }}"
         status_code: 200
-      when: matching_syncs | length == 0 or old_technitium_quadlet.stat.exists
       no_log: true
 
-    - name: Wait for the initial Git sync and deployment
+    - name: Wait for the Git sync and deployment
       ansible.builtin.uri:
         url: "{{ arcane_api }}/environments/{{ arcane_environment_id }}/gitops-syncs/{{ technitium_sync_id }}"
         method: GET
@@ -187,7 +186,6 @@
       retries: 30
       delay: 4
       until: technitium_sync_status.json.data.lastSyncStatus == 'success'
-      when: matching_syncs | length == 0 or old_technitium_quadlet.stat.exists
       no_log: true
 
     - name: Enable ongoing Technitium GitOps reconciliation
@@ -210,6 +208,36 @@
           pullImageAfterSync: true
           redeployAfterSync: true
         status_code: 200
+      no_log: true
+
+    - name: Read the reconciled Technitium project
+      ansible.builtin.uri:
+        url: "{{ arcane_api }}/environments/{{ arcane_environment_id }}/gitops-syncs/{{ technitium_sync_id }}"
+        method: GET
+        headers:
+          X-Api-Key: "{{ arcane_api_key }}"
+        return_content: true
+        status_code: 200
+      register: reconciled_technitium_sync
+      no_log: true
+
+    - name: Verify the Git sync produced an Arcane project
+      ansible.builtin.assert:
+        that:
+          - reconciled_technitium_sync.json.data.lastSyncStatus == 'success'
+          - reconciled_technitium_sync.json.data.projectId | default('') | length > 0
+        fail_msg: Arcane synced the repository but did not create the Technitium project.
+
+    - name: Ensure the Technitium project is running
+      ansible.builtin.uri:
+        url: "{{ arcane_api }}/environments/{{ arcane_environment_id }}/projects/{{ reconciled_technitium_sync.json.data.projectId }}/up"
+        method: POST
+        headers:
+          X-Api-Key: "{{ arcane_api_key }}"
+        body_format: json
+        body: {}
+        status_code: 200
+        timeout: 900
       no_log: true
 
     - name: Wait for the Technitium web console
