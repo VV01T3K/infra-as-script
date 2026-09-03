@@ -3,7 +3,7 @@
   hosts: arcane
   gather_facts: false
   vars:
-    arcane_image: ghcr.io/getarcaneapp/manager:latest
+    arcane_image: ghcr.io/getarcaneapp/manager:v2.10.1
     arcane_url: http://10.0.0.60:3552
     controller_secret_dir: "{{ lookup('env', 'HOME') }}/.config/infra-as-service"
     controller_api_key_file: "{{ controller_secret_dir }}/arcane-api-key"
