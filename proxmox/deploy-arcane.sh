@@ -47,6 +47,10 @@ ANSIBLE_HOST_KEY_CHECKING=True ansible-playbook \
   -i "${project_dir}/ansible/arcane-inventory.yml" \
   "${project_dir}/ansible/gitops.yml"
 
+ANSIBLE_HOST_KEY_CHECKING=True ansible-playbook \
+  -i "${project_dir}/ansible/arcane-inventory.yml" \
+  "${project_dir}/ansible/technitium-config.yml"
+
 echo
 echo "Arcane is ready at http://10.0.0.60:3552"
 echo "Technitium is ready at http://10.0.0.60:5380"

@@ -101,6 +101,21 @@ owns Technitium's Compose lifecycle and checks Git every five minutes. The
 repository contains no credentials or DNS data; Technitium keeps settings and
 zones in `/var/lib/technitium/config` on the LXC.
 
+Ansible also configures Technitium as the replacement for the previous
+AdGuard-and-Unbound pair. It performs recursive resolution directly, validates
+DNSSEC, minimizes QNAMEs, serves stale cached answers during upstream trouble,
+and permits recursion only from localhost and `10.0.0.0/24`. Blocking uses
+HaGeZi Pro++ and the CERT Polska warning list, updated every 24 hours. The
+managed local records are:
+
+- `pve.home.arpa` -> `10.0.0.50`
+- `arcane.home.arpa` -> `10.0.0.60`
+- `dns.home.arpa` -> `10.0.0.60`
+
+Set `10.0.0.60` as the DNS server in the router's DHCP configuration after
+testing it from one client. Keep another DNS address out of DHCP if you want
+blocking to apply consistently; clients otherwise bypass Technitium at random.
+
 OpenTofu state remains local under `tofu/` and is excluded by `.gitignore`.
 Keep that state file: it is required for safe updates and destruction. To view
 the proposed changes later, run:
