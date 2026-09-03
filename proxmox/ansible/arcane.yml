@@ -7,6 +7,7 @@
     arcane_url: http://10.0.0.60:3552
     controller_secret_dir: "{{ lookup('env', 'HOME') }}/.config/infra-as-service"
     controller_api_key_file: "{{ controller_secret_dir }}/arcane-api-key"
+    rotate_arcane_api_key: false
 
   pre_tasks:
     - name: Wait for the new LXC to accept SSH
@@ -26,6 +27,16 @@
         state: present
         update_cache: true
         cache_valid_time: 3600
+
+    - name: Check whether the root runtime directory is persistent
+      ansible.builtin.stat:
+        path: /var/lib/systemd/linger/root
+      register: root_linger
+
+    - name: Keep Podman's root runtime directory across sessions
+      ansible.builtin.command: loginctl enable-linger root
+      changed_when: true
+      when: not root_linger.stat.exists
 
     - name: Use the reliable VFS storage driver inside unprivileged LXC
       ansible.builtin.copy:
@@ -67,7 +78,7 @@
       delegate_to: localhost
       register: generated_api_key
       changed_when: true
-      when: not controller_api_key.stat.exists
+      when: rotate_arcane_api_key | bool or not controller_api_key.stat.exists
       no_log: true
 
     - name: Save the Arcane API key outside the project
@@ -76,7 +87,7 @@
         content: "arc_sk_{{ generated_api_key.stdout }}\n"
         mode: "0600"
       delegate_to: localhost
-      when: not controller_api_key.stat.exists
+      when: rotate_arcane_api_key | bool or not controller_api_key.stat.exists
       no_log: true
 
     - name: Read the Arcane API key
