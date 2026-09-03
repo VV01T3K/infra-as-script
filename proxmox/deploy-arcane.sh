@@ -21,6 +21,8 @@ if [[ ! -r "${ssh_key}" ]]; then
   exit 1
 fi
 
+bash "${project_dir}/bootstrap-gitops.sh"
+
 # shellcheck disable=SC1090
 source "${token_file}"
 export TF_VAR_ssh_public_key

@@ -79,10 +79,12 @@ configure the application with one command:
 bash deploy-arcane.sh
 ```
 
-The script loads the API token already stored outside the project, lets
-Ansible ensure the pinned Debian template exists, runs OpenTofu, waits for SSH,
-installs Podman, and verifies Arcane. Open `http://10.0.0.60:3552` when it
-completes.
+The command requires `gh` to be logged in as a repository administrator. On
+its first run it generates a dedicated SSH key outside the project and adds
+only the public half to GitHub as a read-only deploy key. It then loads the
+Proxmox API token, lets Ansible ensure the pinned Debian template exists, runs
+OpenTofu, waits for SSH, installs Podman, and verifies Arcane. Open
+`http://10.0.0.60:3552` when it completes.
 
 The same command also prepares Technitium's local secret and data directories,
 then asks Arcane to sync [`apps/technitium/compose.yaml`](../apps/technitium/compose.yaml)
