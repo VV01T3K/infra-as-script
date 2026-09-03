@@ -1,0 +1,12 @@
+*.iso
+__pycache__/
+proxmox_bootstrap
+.tmp-*
+
+# Local secrets and machine-specific installer profiles
+.env
+*.env
+*.key
+*.pem
+proxmox/usb/profiles/*.toml
+!proxmox/usb/profiles/*.example.toml

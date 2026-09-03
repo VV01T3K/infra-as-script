@@ -1,0 +1,27 @@
+---
+- name: Prepare the pinned Debian LXC template
+  hosts: pve
+  gather_facts: false
+  vars:
+    template_name: debian-13-standard_13.6-1_amd64.tar.zst
+
+  tasks:
+    - name: Read downloaded LXC templates
+      ansible.builtin.command: pveam list local
+      changed_when: false
+      register: local_templates
+
+    - name: Refresh the Proxmox appliance catalog
+      ansible.builtin.command: pveam update
+      changed_when: false
+      when: template_name not in local_templates.stdout
+
+    - name: Download the Debian 13 LXC template
+      ansible.builtin.command:
+        argv:
+          - pveam
+          - download
+          - local
+          - "{{ template_name }}"
+      when: template_name not in local_templates.stdout
+

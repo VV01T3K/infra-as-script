@@ -1,0 +1,27 @@
+name: technitium
+
+services:
+  dns:
+    image: docker.io/technitium/dns-server:15.4.0
+    container_name: technitium
+    hostname: dns.home.arpa
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "5380:5380/tcp"
+    environment:
+      DNS_SERVER_DOMAIN: dns.home.arpa
+      DNS_SERVER_ADMIN_PASSWORD_FILE: /run/secrets/technitium-admin-password
+      DNS_SERVER_RECURSION: AllowOnlyForPrivateNetworks
+      DNS_SERVER_LOG_USING_LOCAL_TIME: "true"
+      DNS_SERVER_LOG_FOLDER_PATH: /var/log/technitium/dns
+      DNS_SERVER_LOG_MAX_LOG_FILE_DAYS: "30"
+      DNS_SERVER_STATS_MAX_STAT_FILE_DAYS: "30"
+      TZ: Europe/Warsaw
+    volumes:
+      - /var/lib/technitium/config:/etc/dns
+      - /var/lib/technitium/logs:/var/log/technitium/dns
+      - /etc/technitium/admin-password:/run/secrets/technitium-admin-password:ro
+    restart: unless-stopped
+    sysctls:
+      net.ipv4.ip_local_port_range: "1024 65535"

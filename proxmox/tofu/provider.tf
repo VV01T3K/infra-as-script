@@ -1,0 +1,4 @@
+provider "proxmox" {
+  insecure = true
+}
+

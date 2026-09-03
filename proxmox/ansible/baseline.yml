@@ -1,0 +1,226 @@
+---
+- name: Prepare the Proxmox host
+  hosts: pve
+  gather_facts: true
+
+  handlers:
+    - name: Reload SSH
+      ansible.builtin.systemd_service:
+        name: ssh
+        state: reloaded
+
+    - name: Reboot host
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+
+  tasks:
+    - name: Require Proxmox VE 9 on Debian 13
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == "Debian"
+          - ansible_facts.distribution_major_version == "13"
+          - ansible_facts.kernel is search('-pve$')
+        fail_msg: This baseline is only for Proxmox VE 9 on Debian 13.
+
+    - name: Configure Debian repositories
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/debian.sources
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          Types: deb
+          URIs: http://deb.debian.org/debian/
+          Suites: trixie trixie-updates
+          Components: main contrib non-free-firmware
+          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+          Types: deb
+          URIs: http://security.debian.org/debian-security/
+          Suites: trixie-security
+          Components: main contrib non-free-firmware
+          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+    - name: Configure the Proxmox no-subscription repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/proxmox.sources
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          Types: deb
+          URIs: http://download.proxmox.com/debian/pve
+          Suites: trixie
+          Components: pve-no-subscription
+          Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+
+    - name: Check for subscription repository files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/apt/sources.list.d/pve-enterprise.sources
+        - /etc/apt/sources.list.d/ceph.sources
+      register: subscription_repositories
+
+    - name: Disable subscription repositories
+      ansible.builtin.lineinfile:
+        path: "{{ item.stat.path }}"
+        regexp: '^Enabled:'
+        line: 'Enabled: false'
+        insertafter: EOF
+      loop: "{{ subscription_repositories.results }}"
+      when: item.stat.exists
+
+    - name: Update Proxmox
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+      notify: Reboot host
+
+    - name: Install host tools
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - git
+          - htop
+          - intel-microcode
+          - smartmontools
+        state: present
+
+    - name: Disable single-node HA services
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: false
+        state: stopped
+      loop:
+        - pve-ha-lrm
+        - pve-ha-crm
+        - corosync
+
+    - name: Prevent laptop sleep and hibernation
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: false
+        masked: true
+        state: stopped
+      loop:
+        - sleep.target
+        - suspend.target
+        - hibernate.target
+        - hybrid-sleep.target
+
+    - name: Create the systemd login configuration directory
+      ansible.builtin.file:
+        path: /etc/systemd/logind.conf.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Ignore the laptop lid
+      ansible.builtin.copy:
+        dest: /etc/systemd/logind.conf.d/proxmox-server.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Login]
+          HandleLidSwitch=ignore
+          HandleLidSwitchExternalPower=ignore
+          HandleLidSwitchDocked=ignore
+          IdleAction=ignore
+      notify: Reboot host
+
+    - name: Enable periodic SSD trimming
+      ansible.builtin.systemd_service:
+        name: fstrim.timer
+        enabled: true
+        state: started
+
+    - name: Allow only key-based SSH login
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/90-proxmox-bootstrap.conf
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/sshd -t -f %s
+        content: |
+          PubkeyAuthentication yes
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PermitRootLogin prohibit-password
+      notify: Reload SSH
+
+    - name: Install the subscription notice patch
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/pve-remove-subscription-notice
+        owner: root
+        group: root
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          web_js=/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js
+          [ -s "$web_js" ] || exit 0
+          grep -q NoMoreNagging "$web_js" && exit 0
+          sed -i -e '/data\.status/ s/!//' -e '/data\.status/ s/active/NoMoreNagging/' "$web_js" || exit 0
+          grep -q NoMoreNagging "$web_js" && echo patched
+          exit 0
+
+    - name: Reapply the notice patch after package upgrades
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/99-pve-no-subscription-notice
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          DPkg::Post-Invoke { "/usr/local/sbin/pve-remove-subscription-notice"; };
+
+    - name: Hide the subscription notice now
+      ansible.builtin.command: /usr/local/sbin/pve-remove-subscription-notice
+      register: subscription_notice_patch
+      changed_when: "'patched' in subscription_notice_patch.stdout"
+
+    - name: Verify the subscription notice patch
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -q
+          - NoMoreNagging
+          - /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js
+      changed_when: false
+
+    - name: Apply handlers before verification
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify KVM support
+      ansible.builtin.stat:
+        path: /dev/kvm
+      register: kvm_device
+
+    - name: Verify the system SSD health
+      ansible.builtin.command: smartctl -H /dev/sda
+      changed_when: false
+      register: smart_health
+
+    - name: Read final Proxmox version
+      ansible.builtin.command: pveversion
+      changed_when: false
+      register: pve_version
+
+    - name: Verify Proxmox storage
+      ansible.builtin.command: pvesm status
+      changed_when: false
+      register: pve_storage
+
+    - name: Require hardware virtualization
+      ansible.builtin.assert:
+        that: kvm_device.stat.exists
+        fail_msg: /dev/kvm is missing. Enable Intel VT-x in firmware.
+
+    - name: Report baseline status
+      ansible.builtin.debug:
+        msg:
+          - "{{ pve_version.stdout }}"
+          - "{{ smart_health.stdout_lines | last }}"
+          - "{{ pve_storage.stdout_lines }}"
