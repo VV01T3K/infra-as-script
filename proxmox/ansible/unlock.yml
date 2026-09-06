@@ -1,9 +1,0 @@
----
-- name: Release the lock after successful completion
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  tasks:
-    - ansible.builtin.file:
-        path: "{{ playbook_dir }}/../../secrets/proxmox/maintenance.lock.d"
-        state: absent

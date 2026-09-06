@@ -1,0 +1,25 @@
+---
+- name: Validate configuration and run isolated tests
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Check OpenTofu formatting
+      ansible.builtin.command:
+        argv: [tofu, "-chdir={{ repo_root }}/opentofu/proxmox", fmt, -check]
+      changed_when: false
+    - name: Validate initialized OpenTofu configuration
+      ansible.builtin.command:
+        argv: [tofu, "-chdir={{ repo_root }}/opentofu/proxmox", validate]
+      changed_when: false
+    - name: Check public playbook syntax
+      ansible.builtin.command:
+        argv: [ansible-playbook, --syntax-check, "{{ item }}", -e, maintenance_target=guest]
+        chdir: "{{ repo_root }}"
+      loop: "{{ query('fileglob', playbook_dir + '/*.yml') | reject('search', '/validate\\.yml$') | list }}"
+      changed_when: false
+    - name: Run isolated integration tests
+      ansible.builtin.command:
+        argv: [python3, -m, unittest, discover, -s, "{{ repo_root }}/tests/integration", -v]
+        chdir: "{{ repo_root }}"
+      changed_when: false

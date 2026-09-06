@@ -1,0 +1,40 @@
+---
+- name: Lock deployment and maintenance on this checkout
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Lock deployment and maintenance on this checkout
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: lock
+- name: Load the applied OpenTofu inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Load the applied OpenTofu inventory
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: inventory
+- name: Pause automatic Technitium deployments
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Pause automatic Technitium deployments
+    ansible.builtin.import_role:
+      name: arcane
+      tasks_from: pause
+- name: Release the lock after successful completion
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Release the lock after successful completion
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: unlock

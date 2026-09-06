@@ -1,6 +1,6 @@
 # Manage credentials
 
-Run these commands in Linux/WSL from this `secrets/` folder. Ansible performs
+Run these commands in Linux/WSL from the repository root. Ansible performs
 changes on the running services as well as updating the local files.
 
 ## Everyday commands
@@ -8,26 +8,26 @@ changes on the running services as well as updating the local files.
 Show which managed credentials are present (never prints their values):
 
 ```bash
-ansible-playbook -i ../proxmox/ansible/inventory.yml ../proxmox/ansible/secrets.yml
+ansible-playbook ansible/playbooks/secrets.yml
 ```
 
 Generate missing local keys and passwords for a **new installation**:
 
 ```bash
-ansible-playbook -i ../proxmox/ansible/inventory.yml ../proxmox/ansible/secrets.yml -e secrets_action=generate
+ansible-playbook ansible/playbooks/secrets.yml -e secrets_action=generate
 ```
 
 Rotate all managed credentials on an existing deployment:
 
 ```bash
-ansible-playbook -i ../proxmox/ansible/inventory.yml ../proxmox/ansible/secrets.yml -e secrets_action=rotate
+ansible-playbook ansible/playbooks/secrets.yml -e secrets_action=rotate
 ```
 
 Rotate just one credential by adding, for example, `-e secrets_only=technitium`.
 Supported selections: `ssh`, `root`, `proxmox-api`, `arcane-api`, `gitops`,
 `technitium`, or `all` (the default).
 
-For a brand-new installer profile, use the generated `proxmox/proxmox_bootstrap.pub`.
+For a brand-new installer profile, use the generated `secrets/proxmox/proxmox_bootstrap.pub`.
 For an existing USB, keep its matching installer key and follow the reinstall
 command below; generating another key does not change the USB profile.
 
@@ -38,6 +38,8 @@ address from OpenTofu state; it does not run `tofu apply` or redeploy applicatio
 Arcane API-key rotation briefly restarts Arcane.
 
 ## What is managed
+
+Local file paths below are relative to `secrets/`.
 
 | Selection | Local files | What rotation does |
 | --- | --- | --- |
@@ -57,8 +59,8 @@ from a backup or use the relevant live rotation instead.
 After rotating, refresh the environment in any shell used for OpenTofu:
 
 ```bash
-source proxmox/proxmox.env
-export TF_VAR_ssh_public_key="$(ssh-keygen -y -f proxmox/proxmox_bootstrap)"
+source secrets/proxmox/proxmox.env
+export TF_VAR_ssh_public_key="$(ssh-keygen -y -f secrets/proxmox/proxmox_bootstrap)"
 ```
 
 For Technitium with 2FA enabled, supply `technitium_totp` through a private
@@ -66,7 +68,7 @@ Ansible vars file. A rejected or expired code stops the password-change workflow
 
 ## Installer credentials
 
-`site.yml` automatically performs `post-install` retirement after successful host
+`setup.yml` automatically performs `post-install` retirement after successful host
 setup, before guest provisioning. It changes the installed root password and SSH
 key, and records the host machine ID so repeated host setup does not rotate again.
 The profile and files already on the USB are left as they are.
@@ -78,8 +80,8 @@ for reinstalling from the existing USB. Completed profiles remain under
 For a reinstall, use the installer key explicitly when running host setup:
 
 ```bash
-ansible-playbook -i ../proxmox/ansible/inventory.yml ../proxmox/ansible/site.yml \
-  -e ansible_ssh_private_key_file="$PWD/../installer/profiles/old-laptop.key"
+ansible-playbook ansible/playbooks/setup.yml \
+  -e ansible_ssh_private_key_file="$PWD/installer/profiles/old-laptop.key"
 ```
 
 For an existing deployment that predates this feature, run the complete `rotate`
@@ -98,8 +100,8 @@ If a run fails, inspect the error and ensure it has stopped. Release its retaine
 lock, then rerun rotation for that credential:
 
 ```bash
-ansible-playbook ../proxmox/ansible/unlock.yml
-ansible-playbook -i ../proxmox/ansible/inventory.yml ../proxmox/ansible/secrets.yml \
+ansible-playbook ansible/playbooks/unlock.yml
+ansible-playbook ansible/playbooks/secrets.yml \
   -e secrets_action=rotate -e secrets_only=technitium
 ```
 

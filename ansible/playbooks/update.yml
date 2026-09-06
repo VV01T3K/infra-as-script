@@ -1,0 +1,232 @@
+---
+- name: Lock deployment and maintenance on this checkout
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Lock deployment and maintenance on this checkout
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: lock
+- name: Validate maintenance inputs and record this run
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars_prompt:
+  - name: backup_passphrase
+    prompt: Backup encryption passphrase (retain it for recovery)
+    private: true
+    confirm: true
+  tasks:
+  - name: Validate maintenance inputs and record this run
+    ansible.builtin.import_role:
+      name: maintenance
+      tasks_from: prepare
+- name: Load the applied OpenTofu inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Load the applied OpenTofu inventory
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: inventory
+- name: Verify the application host and web services
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Verify the application host and web services
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: health
+- name: Verify DNS from the controller through the LAN
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Verify DNS from the controller through the LAN
+    ansible.builtin.import_role:
+      name: technitium
+      tasks_from: verify
+- name: Encrypt controller credentials before stopping services
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    controller_backup_path: "{{ run_dir }}/controller.tar.gz.gpg"
+    backup_passphrase: "{{ encryption_passphrase }}"
+  tasks:
+  - name: Encrypt controller credentials before stopping services
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: backup
+- name: Pause automatic Technitium deployments
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Pause automatic Technitium deployments
+    ansible.builtin.import_role:
+      name: arcane
+      tasks_from: pause
+- name: Back up the application LXC to explicitly selected storage
+  hosts: pve
+  gather_facts: false
+  vars:
+    backup_report_path: "{{ hostvars['localhost'].run_dir }}/guest-backup.txt"
+  any_errors_fatal: true
+  tasks:
+  - name: Back up the application LXC to explicitly selected storage
+    ansible.builtin.import_role:
+      name: proxmox
+      tasks_from: backup_guest
+- name: Save and encrypt Proxmox configuration before host updates
+  hosts: pve
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Save and encrypt Proxmox configuration before host updates
+    ansible.builtin.import_role:
+      name: proxmox
+      tasks_from: backup_host
+    when: maintenance_target == 'host'
+- name: Verify the application host and web services
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Verify the application host and web services
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: health
+- name: Verify DNS from the controller through the LAN
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Verify DNS from the controller through the LAN
+    ansible.builtin.import_role:
+      name: technitium
+      tasks_from: verify
+- name: Record completed maintenance stage
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Record completed maintenance stage
+    ansible.builtin.import_role:
+      name: maintenance
+      tasks_from: backed_up
+- name: Upgrade packages within the installed Debian release
+  hosts: "{{ update_target | default('arcane') }}"
+  gather_facts: false
+  vars:
+    update_target: "{{ 'pve' if maintenance_target == 'host' else 'arcane' }}"
+  any_errors_fatal: true
+  tasks:
+  - name: Gather facts for the selected operation
+    ansible.builtin.setup: {}
+    when: maintenance_target in ['host', 'guest']
+  - name: Upgrade packages within the installed Debian release
+    ansible.builtin.import_role:
+      name: maintenance
+      tasks_from: packages
+    when: maintenance_target in ['host', 'guest']
+- name: Restore guest container startup after a package update
+  hosts: arcane
+  gather_facts: false
+  vars:
+    update_target: "{{ 'pve' if maintenance_target == 'host' else 'arcane' }}"
+  any_errors_fatal: true
+  tasks:
+  - name: Restore guest container startup after a package update
+    ansible.builtin.import_role:
+      name: maintenance
+      tasks_from: recover_guest
+    when: maintenance_target in ['host', 'guest']
+- name: Configure Arcane on Podman
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Configure Arcane on Podman
+    ansible.builtin.import_role:
+      name: arcane
+      tasks_from: configure
+    when: maintenance_target == 'arcane'
+- name: Configure Arcane GitOps projects
+  hosts: arcane
+  gather_facts: false
+  vars:
+    expected_git_commit: "{{ hostvars['localhost'].expected_revision }}"
+  any_errors_fatal: true
+  tasks:
+  - name: Configure Arcane GitOps projects
+    ansible.builtin.import_role:
+      name: arcane
+      tasks_from: sync
+    when: maintenance_target == 'technitium'
+- name: Configure Technitium DNS
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Configure Technitium DNS
+    ansible.builtin.import_role:
+      name: technitium
+      tasks_from: configure
+    when: maintenance_target == 'technitium'
+- name: Verify freshly installed Proxmox
+  hosts: pve
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Verify freshly installed Proxmox
+    ansible.builtin.import_role:
+      name: proxmox
+      tasks_from: ready
+    when: maintenance_target == 'host'
+- name: Verify the application host and web services
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Verify the application host and web services
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: health
+- name: Verify DNS from the controller through the LAN
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Verify DNS from the controller through the LAN
+    ansible.builtin.import_role:
+      name: technitium
+      tasks_from: verify
+- name: Record completed maintenance stage
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Record completed maintenance stage
+    ansible.builtin.import_role:
+      name: maintenance
+      tasks_from: finish
+- name: Release the lock after successful completion
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Release the lock after successful completion
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: unlock

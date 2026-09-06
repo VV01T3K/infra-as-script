@@ -1,0 +1,219 @@
+---
+- name: Configure Arcane GitOps projects
+  vars:
+    arcane_api: http://127.0.0.1:3552/api
+    arcane_environment_id: '0'
+    github_repository_name: infra-as-script
+    github_repository_url: git@github.com:VV01T3K/infra-as-script.git
+    controller_secret_dir: "{{ repo_root }}/secrets/arcane"
+    controller_api_key_file: "{{ controller_secret_dir }}/arcane-api-key"
+    controller_deploy_key_file: "{{ controller_secret_dir }}/arcane-gitops"
+  block:
+  - name: Wait for Arcane host
+    ansible.builtin.wait_for_connection:
+      timeout: 60
+  - name: Read the Arcane API key
+    ansible.builtin.slurp:
+      src: "{{ controller_api_key_file }}"
+    delegate_to: localhost
+    register: arcane_api_key_file
+    no_log: true
+  - name: Read the GitHub deploy key
+    ansible.builtin.slurp:
+      src: "{{ controller_deploy_key_file }}"
+    delegate_to: localhost
+    register: arcane_deploy_key_file
+    no_log: true
+  - name: Decode controller credentials
+    ansible.builtin.set_fact:
+      arcane_api_key: "{{ arcane_api_key_file.content | b64decode | trim }}"
+      arcane_deploy_key: "{{ arcane_deploy_key_file.content | b64decode }}"
+    no_log: true
+  - name: Find the Arcane Git repository connection
+    ansible.builtin.uri:
+      url: "{{ arcane_api }}/customize/git-repositories?search={{ github_repository_name }}&start=0&limit=100"
+      method: GET
+      headers:
+        X-Api-Key: "{{ arcane_api_key }}"
+      return_content: true
+      status_code: 200
+    register: arcane_repositories
+    no_log: true
+  - name: Select the Arcane Git repository connection
+    ansible.builtin.set_fact:
+      matching_repositories: "{{ arcane_repositories.json.data | selectattr('name', 'equalto', github_repository_name)\
+        \ | list }}"
+    no_log: true
+  - name: Add the private GitHub repository to Arcane
+    ansible.builtin.uri:
+      url: "{{ arcane_api }}/customize/git-repositories"
+      method: POST
+      headers:
+        X-Api-Key: "{{ arcane_api_key }}"
+      body_format: json
+      body:
+        name: "{{ github_repository_name }}"
+        description: Private homelab infrastructure
+        url: "{{ github_repository_url }}"
+        authType: ssh
+        sshKey: "{{ arcane_deploy_key }}"
+        sshHostKeyVerification: accept_new
+        enabled: true
+      return_content: true
+      status_code: 200
+    register: created_repository
+    when: matching_repositories | length == 0
+    no_log: true
+  - name: Select the Arcane repository ID
+    ansible.builtin.set_fact:
+      arcane_repository_id: "{{ (created_repository.json.data.id if matching_repositories | length == 0 else matching_repositories[0].id)\
+        \ }}"
+    no_log: true
+  - name: Test the Arcane repository connection
+    ansible.builtin.uri:
+      url: "{{ arcane_api }}/customize/git-repositories/{{ arcane_repository_id }}/test?branch=main"
+      method: POST
+      headers:
+        X-Api-Key: "{{ arcane_api_key }}"
+      return_content: true
+      status_code: 200
+    no_log: true
+  - name: Find the Technitium GitOps sync
+    ansible.builtin.uri:
+      url: "{{ arcane_api }}/environments/{{ arcane_environment_id }}/gitops-syncs?search=technitium&start=0&limit=100"
+      method: GET
+      headers:
+        X-Api-Key: "{{ arcane_api_key }}"
+      return_content: true
+      status_code: 200
+    register: arcane_syncs
+    no_log: true
+  - name: Select the Technitium GitOps sync
+    ansible.builtin.set_fact:
+      matching_syncs: "{{ arcane_syncs.json.data | selectattr('name', 'equalto', 'technitium') | list }}"
+    no_log: true
+  - name: Create an inactive Technitium GitOps sync for migration
+    ansible.builtin.uri:
+      url: "{{ arcane_api }}/environments/{{ arcane_environment_id }}/gitops-syncs"
+      method: POST
+      headers:
+        X-Api-Key: "{{ arcane_api_key }}"
+      body_format: json
+      body:
+        name: technitium
+        repositoryId: "{{ arcane_repository_id }}"
+        branch: main
+        composePath: apps/technitium/compose.yaml
+        targetType: project
+        projectName: technitium
+        autoSync: false
+        syncInterval: 5
+        syncDirectory: true
+        pullImageAfterSync: true
+        redeployAfterSync: true
+      return_content: true
+      status_code: 200
+    register: created_sync
+    when: matching_syncs | length == 0
+    no_log: true
+  - name: Select the Technitium sync ID
+    ansible.builtin.set_fact:
+      technitium_sync_id: "{{ (created_sync.json.data.id if matching_syncs | length == 0 else matching_syncs[0].id)\
+        \ }}"
+    no_log: true
+  - name: Check for the previous Technitium Quadlet
+    ansible.builtin.stat:
+      path: /etc/containers/systemd/technitium.container
+    register: old_technitium_quadlet
+  - name: Stop the previous Technitium Quadlet
+    ansible.builtin.systemd_service:
+      name: technitium.service
+      enabled: false
+      state: stopped
+    when: old_technitium_quadlet.stat.exists
+  - name: Remove the previous Technitium Quadlet
+    ansible.builtin.file:
+      path: /etc/containers/systemd/technitium.container
+      state: absent
+    when: old_technitium_quadlet.stat.exists
+  - name: Reload systemd after Quadlet migration
+    ansible.builtin.systemd_service:
+      daemon_reload: true
+    when: old_technitium_quadlet.stat.exists
+  - name: Remove the stopped pre-GitOps container
+    ansible.builtin.command: podman rm technitium
+    register: removed_old_container
+    changed_when: removed_old_container.rc == 0
+    failed_when: removed_old_container.rc not in [0, 1]
+    when: old_technitium_quadlet.stat.exists
+  - name: Sync Technitium from Git now
+    ansible.builtin.uri:
+      url: "{{ arcane_api }}/environments/{{ arcane_environment_id }}/gitops-syncs/{{ technitium_sync_id }}/sync"
+      method: POST
+      headers:
+        X-Api-Key: "{{ arcane_api_key }}"
+      status_code: 200
+      timeout: 900
+      return_content: true
+    register: requested_technitium_sync
+    failed_when: requested_technitium_sync.status != 200 or not (requested_technitium_sync.json.data.success | default(false)
+      | bool)
+    no_log: true
+  - name: Keep Technitium updates explicitly triggered after backups
+    ansible.builtin.uri:
+      url: "{{ arcane_api }}/environments/{{ arcane_environment_id }}/gitops-syncs/{{ technitium_sync_id }}"
+      method: PUT
+      headers:
+        X-Api-Key: "{{ arcane_api_key }}"
+      body_format: json
+      body:
+        name: technitium
+        repositoryId: "{{ arcane_repository_id }}"
+        branch: main
+        composePath: apps/technitium/compose.yaml
+        targetType: project
+        projectName: technitium
+        autoSync: false
+        syncInterval: 5
+        syncDirectory: true
+        pullImageAfterSync: true
+        redeployAfterSync: true
+      status_code: 200
+    no_log: true
+  - name: Read the reconciled Technitium project
+    ansible.builtin.uri:
+      url: "{{ arcane_api }}/environments/{{ arcane_environment_id }}/gitops-syncs/{{ technitium_sync_id }}"
+      method: GET
+      headers:
+        X-Api-Key: "{{ arcane_api_key }}"
+      return_content: true
+      status_code: 200
+    register: reconciled_technitium_sync
+    no_log: true
+  - name: Verify the Git sync produced an Arcane project
+    ansible.builtin.assert:
+      that:
+      - reconciled_technitium_sync.json.data.lastSyncStatus == 'success'
+      - reconciled_technitium_sync.json.data.projectId | default('') | length > 0
+      - expected_git_commit is not defined or reconciled_technitium_sync.json.data.lastSyncCommit == expected_git_commit
+      fail_msg: Arcane synced the repository but did not create the Technitium project.
+  - name: Ensure the Technitium project is running
+    ansible.builtin.uri:
+      url: "{{ arcane_api }}/environments/{{ arcane_environment_id }}/projects/{{ reconciled_technitium_sync.json.data.projectId\
+        \ }}/up"
+      method: POST
+      headers:
+        X-Api-Key: "{{ arcane_api_key }}"
+      body_format: json
+      body: {}
+      status_code: 200
+      timeout: 900
+    no_log: true
+  - name: Wait for the Technitium web console
+    ansible.builtin.uri:
+      url: http://127.0.0.1:5380/
+      status_code: 200
+    register: technitium_web
+    retries: 30
+    delay: 3
+    until: technitium_web.status == 200

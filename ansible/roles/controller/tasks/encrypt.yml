@@ -1,0 +1,60 @@
+---
+- name: Require an absolute destination and a backup passphrase
+  ansible.builtin.assert:
+    that:
+    - not ansible_check_mode
+    - controller_backup_path is defined
+    - controller_backup_path is abs
+    - backup_passphrase | default('') | length > 0
+  no_log: true
+- ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+  - "{{ repo_root }}/installer/profiles"
+  - "{{ repo_root }}/secrets"
+  - "{{ repo_root }}/secrets/proxmox/proxmox_bootstrap"
+  - "{{ repo_root }}/opentofu/proxmox/terraform.tfstate"
+  register: controller_inputs
+- name: Require complete backup inputs
+  ansible.builtin.assert:
+    that: controller_inputs.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
+- ansible.builtin.stat:
+    path: "{{ controller_backup_path }}"
+  register: existing_archive
+- name: Refuse to overwrite a previous backup
+  ansible.builtin.assert:
+    that: not existing_archive.stat.exists
+- name: Allocate private encrypted staging alongside destination
+  ansible.builtin.tempfile:
+    state: file
+    path: "{{ controller_backup_path | dirname }}"
+    prefix: .controller-encrypted-
+  register: encrypted_staging
+- name: Encrypt and publish the controller backup
+  block:
+  - name: Stream tar directly into GPG without a plaintext archive
+    ansible.builtin.shell: |
+      set -euo pipefail
+      tar -czf - -C "$REPO_ROOT" --exclude=secrets/proxmox/maintenance.lock.d secrets installer/profiles -C "$TOFU_DIR" terraform.tfstate |
+        gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 --symmetric --cipher-algo AES256 --output "$ENCRYPTED_PATH" 3<<< "$BACKUP_PASSPHRASE"
+    args:
+      executable: /bin/bash
+    environment:
+      REPO_ROOT: "{{ repo_root }}"
+      TOFU_DIR: "{{ repo_root }}/opentofu/proxmox"
+      ENCRYPTED_PATH: "{{ encrypted_staging.path }}"
+      BACKUP_PASSPHRASE: "{{ backup_passphrase }}"
+    no_log: true
+    changed_when: true
+  - name: Publish atomically without replacing an existing backup
+    ansible.builtin.command:
+      argv:
+      - ln
+      - --
+      - "{{ encrypted_staging.path }}"
+      - "{{ controller_backup_path }}"
+    changed_when: true
+  always:
+  - ansible.builtin.file:
+      path: "{{ encrypted_staging.path }}"
+      state: absent

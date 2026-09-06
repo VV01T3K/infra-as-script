@@ -1,0 +1,49 @@
+---
+- name: Require a backup storage and the generated guest inventory
+  ansible.builtin.assert:
+    that:
+    - backup_storage | default('') | length > 0
+    - hostvars['arcane'].lxc_id is defined
+    fail_msg: Supply backup_storage and the applied guest inventory loaded by the controller role.
+- name: Read available backup storage
+  ansible.builtin.command:
+    argv:
+    - pvesh
+    - get
+    - /nodes/pve/storage
+    - --content
+    - backup
+    - --output-format
+    - json
+  register: backup_storages
+  changed_when: false
+- name: Require the selected storage to be active and support backups
+  ansible.builtin.assert:
+    that:
+    - backup_storages.stdout | from_json | selectattr('storage', 'equalto', backup_storage) | selectattr('active',
+      'equalto', 1) | list | length == 1
+    fail_msg: The chosen Proxmox backup storage is unavailable.
+- name: Back up the stopped LXC including application data and encryption keys
+  ansible.builtin.command:
+    argv:
+    - vzdump
+    - "{{ hostvars['arcane'].lxc_id }}"
+    - --storage
+    - "{{ backup_storage }}"
+    - --mode
+    - stop
+    - --compress
+    - zstd
+    - --remove
+    - '0'
+  changed_when: true
+  register: guest_backup_result
+- name: Save the backup task output for recovery
+  ansible.builtin.copy:
+    dest: "{{ backup_report_path }}"
+    content: |
+      {{ guest_backup_result.stdout }}
+      {{ guest_backup_result.stderr }}
+    mode: '0600'
+  delegate_to: localhost
+  when: backup_report_path is defined

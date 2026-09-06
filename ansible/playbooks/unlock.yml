@@ -1,0 +1,10 @@
+---
+- name: Release the lock after successful completion
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+  - name: Release the lock after successful completion
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: unlock

@@ -1,0 +1,4 @@
+---
+- ansible.builtin.lineinfile:
+    path: "{{ run_dir }}/manifest.txt"
+    line: backups_complete=true

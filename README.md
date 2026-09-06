@@ -2,21 +2,38 @@
 
 Declarative configuration for the `pve.home.arpa` homelab.
 
-## Ownership
+| Folder | Purpose |
+| --- | --- |
+| `ansible/playbooks/` | Commands you run: setup, deploy, update, backup, secrets, pause, verify, unlock, validate |
+| `ansible/roles/` | Reusable implementation grouped by responsibility |
+| `inventory/` | Host addresses and shared configuration |
+| `opentofu/proxmox/` | Proxmox guests and their CPU, memory, disks, and network allocation |
+| `apps/` | Compose projects managed by Arcane |
+| `installer/` | Manual USB installer materials, separate from automation |
+| `secrets/` | Local credentials and the [rotation guide](secrets/README.md) |
+| `tests/` | Isolated tests and their Python helpers |
+| `docs/` | [Setup](docs/SETUP.md), [maintenance](docs/MAINTENANCE.md), and [recovery](docs/RECOVERY.md) |
 
-- OpenTofu owns Proxmox guests and their hardware/network allocation.
-- Ansible prepares Proxmox, bootstraps hosts, and installs local secrets.
-- Arcane syncs application Compose projects from `apps/` and controls their lifecycle on Podman.
-- Runtime data, generated credentials, OpenTofu state, and installer profiles stay outside Git.
+Run commands from the repository root. `ansible.cfg` supplies inventory and role paths.
 
-The first Git-managed application is Technitium DNS at `10.0.0.60`. Arcane
-itself remains an Ansible-managed Quadlet because it must be running before it
-can pull this repository.
+```bash
+ansible-galaxy collection install -r ansible/requirements.yml
+ansible-playbook ansible/playbooks/setup.yml
+# Follow docs/SETUP.md for the OpenTofu plan/apply step.
+ansible-playbook ansible/playbooks/deploy.yml
+```
 
-Prepare installation media manually using [`installer/README.md`](installer/README.md).
-Then use [`proxmox/README.md`](proxmox/README.md) for host configuration and deployment.
-See [`proxmox/RECOVERY.md`](proxmox/RECOVERY.md) for backups and restore drills.
-See [`proxmox/UPDATES.md`](proxmox/UPDATES.md) for routine updates with backups and health checks.
+OpenTofu owns guest infrastructure. Ansible configures hosts, installs credentials,
+and runs operational workflows. Arcane manages application Compose projects;
+Arcane itself remains an Ansible-managed Quadlet. The first application is
+Technitium DNS at `10.0.0.60`.
+
+Runtime data, OpenTofu state, completed installer profiles, and credential values
+stay outside Git. Credentials are grouped by purpose in `secrets/`; installer
+profiles stay with the installer. Only the secrets guide is tracked there.
+
+The operational logic is Ansible YAML and OpenTofu HCL. Custom Python is confined
+to the test harness; Ansible itself still uses Python to execute modules.
 
 ## Future service shortlist
 
@@ -25,22 +42,3 @@ repository remains a catalogue, not a migration checklist. Useful candidates
 include Caddy, Cloudflared, Authelia, CrowdSec, Homepage, Uptime Kuma, Beszel,
 Gitea, n8n, Open WebUI, Excalidraw, and IT-Tools. Each future service should get
 its own directory under `apps/` and an explicit owner for secrets and data.
-
-## Local secrets
-
-Keep passwords, API tokens, and private keys in
-[`secrets/`](secrets/) at the repository root. The entire folder is ignored by Git.
-Deployment and Ansible read credentials here; controller backups include it.
-
-- `proxmox/`: API token (`proxmox.env`) and bootstrap SSH key
-- `arcane/`: API key and GitHub deploy key
-- `technitium/`: DNS admin password
-
-Add a folder per service as more credentials are introduced.
-See [secrets/README.md](secrets/README.md) for generation, rotation, and recovery.
-
-Service runtime copies remain on their hosts. OpenTofu state remains in
-`proxmox/tofu/` and is also ignored and included in controller backups.
-
-Machine-specific installer profiles live in `installer/profiles/` and are also
-ignored by Git; placeholder examples remain tracked.

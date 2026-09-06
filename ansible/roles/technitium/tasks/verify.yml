@@ -1,0 +1,74 @@
+---
+- name: Verify local A records over UDP and TCP
+  ansible.builtin.command:
+    argv:
+    - dig
+    - "@{{ hostvars[inventory_hostname].ansible_host }}"
+    - "{{ item.0.name }}"
+    - A
+    - +short
+    - +time=3
+    - +tries=1
+    - "{{ item.1 }}"
+  delegate_to: localhost
+  loop: "{{ technitium_records | product(['+notcp', '+tcp']) | list }}"
+  register: local_dns
+  changed_when: false
+  retries: 5
+  delay: 3
+  until: local_dns.rc == 0 and local_dns.stdout_lines == [item.0.address]
+- name: Verify managed reverse records
+  ansible.builtin.command:
+    argv:
+    - dig
+    - "@{{ hostvars[inventory_hostname].ansible_host }}"
+    - -x
+    - "{{ item.address }}"
+    - +short
+    - +time=3
+    - +tries=1
+  delegate_to: localhost
+  loop: "{{ technitium_records | selectattr('ptr') | list }}"
+  register: reverse_dns
+  changed_when: false
+  failed_when: reverse_dns.rc != 0 or (item.name ~ '.') not in reverse_dns.stdout_lines
+- name: Verify external recursive resolution over UDP and TCP
+  ansible.builtin.command:
+    argv:
+    - dig
+    - "@{{ hostvars[inventory_hostname].ansible_host }}"
+    - "{{ dns_external_test_name }}"
+    - A
+    - +short
+    - +time=10
+    - +tries=1
+    - "{{ item }}"
+  delegate_to: localhost
+  loop:
+  - +notcp
+  - +tcp
+  register: external_dns
+  changed_when: false
+  retries: 5
+  delay: 3
+  until: external_dns.rc == 0 and external_dns.stdout | trim | length > 0
+- name: Verify a known block-list domain returns NXDOMAIN
+  ansible.builtin.command:
+    argv:
+    - dig
+    - "@{{ hostvars[inventory_hostname].ansible_host }}"
+    - "{{ dns_blocked_test_name }}"
+    - A
+    - +time=3
+    - +tries=1
+  delegate_to: localhost
+  when: dns_blocked_test_name | length > 0
+  register: blocked_dns
+  changed_when: false
+  retries: 20
+  delay: 3
+  until: 'blocked_dns.rc == 0 and ''status: NXDOMAIN'' in blocked_dns.stdout'
+- name: Report optional blocking check
+  ansible.builtin.debug:
+    msg: 'Blocking query skipped: set dns_blocked_test_name to a known entry in the downloaded lists.'
+  when: dns_blocked_test_name | length == 0

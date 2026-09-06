@@ -55,7 +55,7 @@ replacing `answer.toml`; the prepared ISO stays the same.
 3. Select the prepared Proxmox image if it does not start automatically.
 4. Wait for the installer to power the laptop off. Remove both USBs and power
    it on again.
-5. Continue with the host setup commands in [proxmox/README.md](../proxmox/README.md).
+5. Continue with the host setup commands in [docs/SETUP.md](../docs/SETUP.md).
 
 Completed profiles live in `installer/profiles/`. They are git-ignored and included
 in controller backups. Placeholder examples remain tracked.

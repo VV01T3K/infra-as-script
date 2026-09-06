@@ -1,0 +1,19 @@
+---
+- name: Create the Podman boot service override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/podman-restart.service.d
+    state: directory
+    mode: '0755'
+- name: Include Compose containers with unless-stopped policy at boot
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/podman-restart.service.d/compose.conf
+    mode: '0644'
+    content: |
+      [Service]
+      ExecStart=/usr/bin/podman start --all --filter restart-policy=unless-stopped
+      ExecStop=/usr/bin/podman stop --all --filter restart-policy=unless-stopped
+- name: Enable Compose container recovery when the guest boots
+  ansible.builtin.systemd_service:
+    name: podman-restart.service
+    daemon_reload: true
+    enabled: true

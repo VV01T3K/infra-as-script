@@ -1,0 +1,95 @@
+---
+- name: Lock deployment and maintenance on this checkout
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Lock deployment and maintenance on this checkout
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: lock
+- name: Load the applied OpenTofu inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Load the applied OpenTofu inventory
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: inventory
+- name: Prepare the Arcane read-only GitHub deploy key
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Prepare the Arcane read-only GitHub deploy key
+    ansible.builtin.import_role:
+      name: arcane
+      tasks_from: github_key
+- name: Configure Arcane on Podman
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Configure Arcane on Podman
+    ansible.builtin.import_role:
+      name: arcane
+      tasks_from: configure
+- name: Prepare persistent Technitium data and secret
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Prepare persistent Technitium data and secret
+    ansible.builtin.import_role:
+      name: technitium
+      tasks_from: prepare
+- name: Configure Arcane GitOps projects
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Configure Arcane GitOps projects
+    ansible.builtin.import_role:
+      name: arcane
+      tasks_from: sync
+- name: Configure Technitium DNS
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Configure Technitium DNS
+    ansible.builtin.import_role:
+      name: technitium
+      tasks_from: configure
+- name: Verify the application host and web services
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Verify the application host and web services
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: health
+- name: Verify DNS from the controller through the LAN
+  hosts: arcane
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Verify DNS from the controller through the LAN
+    ansible.builtin.import_role:
+      name: technitium
+      tasks_from: verify
+- name: Release the lock after successful completion
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Release the lock after successful completion
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: unlock
