@@ -1,0 +1,23 @@
+---
+- name: Validate the repository locally without deploying
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Check OpenTofu formatting
+      ansible.builtin.command:
+        argv: [tofu, "-chdir={{ playbook_dir }}/../tofu", fmt, -check]
+      changed_when: false
+    - name: Validate initialized OpenTofu configuration
+      ansible.builtin.command:
+        argv: [tofu, "-chdir={{ playbook_dir }}/../tofu", validate]
+      changed_when: false
+    - name: Check Ansible syntax
+      ansible.builtin.command:
+        argv: [ansible-playbook, -i, "{{ playbook_dir }}/inventory.yml", --syntax-check, "{{ item }}", -e, maintenance_target=guest]
+      loop: "{{ query('fileglob', playbook_dir + '/*.yml') | reject('search', '/(inventory|validate)\\.yml$') | list }}"
+      changed_when: false
+    - name: Run local integration tests
+      ansible.builtin.command:
+        argv: [python3, -m, unittest, discover, -s, "{{ playbook_dir }}/../tests", -v]
+      changed_when: false

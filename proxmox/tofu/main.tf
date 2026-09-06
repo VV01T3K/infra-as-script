@@ -4,6 +4,10 @@ locals {
 }
 
 resource "proxmox_virtual_environment_container" "arcane" {
+  lifecycle {
+    prevent_destroy = true
+  }
+
   node_name   = local.node_name
   vm_id       = local.vm_id
   description = "Arcane container management panel on Podman; managed by OpenTofu and Ansible"

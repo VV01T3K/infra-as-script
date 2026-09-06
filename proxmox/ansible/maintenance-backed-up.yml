@@ -1,0 +1,10 @@
+---
+- name: Record completed maintenance stage
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - ansible.builtin.lineinfile:
+        path: "{{ run_dir }}/manifest.txt"
+        line: backups_complete=true

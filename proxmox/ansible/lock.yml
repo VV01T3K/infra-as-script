@@ -1,0 +1,24 @@
+---
+- name: Lock deployment and maintenance on this checkout
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - ansible.builtin.assert:
+        that: not ansible_check_mode
+        fail_msg: Use syntax checks; check mode cannot validate operational gates.
+    - ansible.builtin.file:
+        path: "{{ playbook_dir }}/../../secrets/proxmox"
+        state: directory
+        mode: '0700'
+    - name: Acquire the shared lock atomically
+      ansible.builtin.command:
+        argv: [mkdir, -m, '700', "{{ playbook_dir }}/../../secrets/proxmox/maintenance.lock.d"]
+      changed_when: true
+      # Retained on failure to prevent another run masking partial work.
+    - name: Record lock ownership for recovery
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/../../secrets/proxmox/maintenance.lock.d/owner.txt"
+        content: "Started {{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }} by {{ lookup('env', 'USER') }}"
+        mode: '0600'

@@ -6,7 +6,7 @@
     automation_user: automation@pve
     automation_token: iac
     management_network: 10.0.0.0/24
-    token_directory: "{{ lookup('env', 'HOME') }}/.config/infra-as-service"
+    token_directory: "{{ playbook_dir }}/../../secrets/proxmox"
     token_file: "{{ token_directory }}/proxmox.env"
 
   tasks:
@@ -103,7 +103,7 @@
         mode: "0700"
       delegate_to: localhost
 
-    - name: Save the API token outside the project
+    - name: Save the API token in the ignored secrets directory
       ansible.builtin.copy:
         dest: "{{ token_file }}"
         mode: "0600"
@@ -225,4 +225,3 @@
           - "API identity: {{ automation_user }}!{{ automation_token }}"
           - "API secret file: {{ token_file }}"
           - "Firewall: {{ firewall_status.stdout }}"
-

@@ -1,0 +1,11 @@
+---
+- name: Encrypt controller credentials before stopping services
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    controller_backup_path: "{{ run_dir }}/controller.tar.gz.gpg"
+    backup_passphrase: "{{ encryption_passphrase }}"
+  tasks:
+    - ansible.builtin.import_tasks: tasks/encrypt-controller.yml

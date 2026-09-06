@@ -1,0 +1,49 @@
+---
+- ansible.builtin.import_playbook: lock.yml
+  any_errors_fatal: true
+- ansible.builtin.import_playbook: maintenance-prepare.yml
+  any_errors_fatal: true
+- ansible.builtin.import_playbook: load-inventory.yml
+  any_errors_fatal: true
+- ansible.builtin.import_playbook: verify-services.yml
+  any_errors_fatal: true
+- ansible.builtin.import_playbook: maintenance-backup.yml
+  any_errors_fatal: true
+- ansible.builtin.import_playbook: pause-gitops.yml
+  any_errors_fatal: true
+- ansible.builtin.import_playbook: backup.yml
+  any_errors_fatal: true
+  vars:
+    backup_report_path: '{{ hostvars[''localhost''].run_dir }}/guest-backup.txt'
+- ansible.builtin.import_playbook: backup-host.yml
+  any_errors_fatal: true
+  when: maintenance_target == 'host'
+- ansible.builtin.import_playbook: verify-services.yml
+  any_errors_fatal: true
+- ansible.builtin.import_playbook: maintenance-backed-up.yml
+  any_errors_fatal: true
+- ansible.builtin.import_playbook: update-packages.yml
+  any_errors_fatal: true
+  when: maintenance_target in ['host', 'guest']
+  vars:
+    update_target: '{{ ''pve'' if maintenance_target == ''host'' else ''arcane'' }}'
+- ansible.builtin.import_playbook: arcane.yml
+  any_errors_fatal: true
+  when: maintenance_target == 'arcane'
+- ansible.builtin.import_playbook: gitops.yml
+  any_errors_fatal: true
+  when: maintenance_target == 'technitium'
+  vars:
+    expected_git_commit: '{{ hostvars[''localhost''].expected_revision }}'
+- ansible.builtin.import_playbook: technitium-config.yml
+  any_errors_fatal: true
+  when: maintenance_target == 'technitium'
+- ansible.builtin.import_playbook: ready.yml
+  any_errors_fatal: true
+  when: maintenance_target == 'host'
+- ansible.builtin.import_playbook: verify-services.yml
+  any_errors_fatal: true
+- ansible.builtin.import_playbook: maintenance-finish.yml
+  any_errors_fatal: true
+- ansible.builtin.import_playbook: unlock.yml
+  any_errors_fatal: true

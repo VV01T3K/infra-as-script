@@ -1,4 +1,4 @@
-# Infra as Service
+# Infra as Script
 
 Declarative configuration for the `pve.home.arpa` homelab.
 
@@ -14,6 +14,8 @@ itself remains an Ansible-managed Quadlet because it must be running before it
 can pull this repository.
 
 See [`proxmox/README.md`](proxmox/README.md) for installation and deployment.
+See [`proxmox/RECOVERY.md`](proxmox/RECOVERY.md) for backups and restore drills.
+See [`proxmox/UPDATES.md`](proxmox/UPDATES.md) for routine updates with backups and health checks.
 
 ## Future service shortlist
 
@@ -22,3 +24,18 @@ repository remains a catalogue, not a migration checklist. Useful candidates
 include Caddy, Cloudflared, Authelia, CrowdSec, Homepage, Uptime Kuma, Beszel,
 Gitea, n8n, Open WebUI, Excalidraw, and IT-Tools. Each future service should get
 its own directory under `apps/` and an explicit owner for secrets and data.
+
+## Local secrets
+
+Keep passwords, API tokens, private keys, and the private installer profile in
+[`secrets/`](secrets/) at the repository root. The entire folder is ignored by Git.
+Deployment and Ansible read credentials here; controller backups include it.
+
+- `proxmox/`: API token (`proxmox.env`), bootstrap SSH key, and installer profile
+- `arcane/`: API key and GitHub deploy key
+- `technitium/`: DNS admin password
+
+Add a folder per service as more credentials are introduced.
+
+Service runtime copies remain on their hosts. OpenTofu state remains in
+`proxmox/tofu/` and is also ignored and included in controller backups.

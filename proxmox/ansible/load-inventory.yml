@@ -1,0 +1,23 @@
+---
+- name: Load the applied OpenTofu inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/tofu-inventory.py"]
+      register: applied_inventory
+      changed_when: false
+      check_mode: false
+    - name: Add the applied guest
+      ansible.builtin.add_host:
+        name: arcane
+        ansible_host: "{{ guest.ansible_host }}"
+        lxc_id: "{{ guest.lxc_id }}"
+        ansible_user: "{{ guest.ansible_user }}"
+        ansible_python_interpreter: "{{ guest.ansible_python_interpreter }}"
+        ansible_ssh_private_key_file: "{{ guest.ansible_ssh_private_key_file }}"
+        ansible_ssh_common_args: "{{ guest.ansible_ssh_common_args }}"
+      vars:
+        guest: "{{ (applied_inventory.stdout | from_json).all.hosts.arcane }}"

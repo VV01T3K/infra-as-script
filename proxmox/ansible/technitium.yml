@@ -3,7 +3,7 @@
   hosts: arcane
   gather_facts: false
   vars:
-    controller_secret_dir: "{{ lookup('env', 'HOME') }}/.config/infra-as-service"
+    controller_secret_dir: "{{ playbook_dir }}/../../secrets/technitium"
     controller_password_file: "{{ controller_secret_dir }}/technitium-admin-password"
 
   pre_tasks:
@@ -33,7 +33,7 @@
       when: not controller_password.stat.exists
       no_log: true
 
-    - name: Save the Technitium password outside the project
+    - name: Save the Technitium password in the ignored secrets directory
       ansible.builtin.copy:
         dest: "{{ controller_password_file }}"
         content: "{{ generated_password.stdout }}\n"

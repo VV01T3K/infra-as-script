@@ -4,14 +4,10 @@
   gather_facts: false
   vars:
     technitium_api: http://127.0.0.1:5380/api
-    controller_password_file: "{{ lookup('env', 'HOME') }}/.config/infra-as-service/technitium-admin-password"
+    controller_password_file: "{{ playbook_dir }}/../../secrets/technitium/technitium-admin-password"
     technitium_block_lists:
       - https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro.plus.txt
       - https://hole.cert.pl/domains/v2/domains.txt
-    technitium_records:
-      - { name: pve.home.arpa, address: 10.0.0.50, ptr: true }
-      - { name: arcane.home.arpa, address: 10.0.0.60, ptr: true }
-      - { name: dns.home.arpa, address: 10.0.0.60, ptr: false }
 
   pre_tasks:
     - name: Wait for Technitium host
@@ -45,6 +41,7 @@
         return_content: true
         status_code: 200
       register: technitium_login
+      failed_when: technitium_login.json.status | default('error') != 'ok'
       no_log: true
 
     - name: Store the short-lived Technitium session token
@@ -125,6 +122,7 @@
         return_content: true
         status_code: 200
       register: technitium_zones
+      failed_when: technitium_zones.json.status | default('error') != 'ok'
       no_log: true
 
     - name: Create the home.arpa zone
@@ -139,18 +137,9 @@
           type: Primary
           useSoaSerialDateScheme: true
         status_code: 200
+      register: technitium_zone_created
+      failed_when: technitium_zone_created.json.status | default('error') != 'ok'
       when: "'home.arpa' not in (technitium_zones.json.response.zones | map(attribute='name') | list)"
-      no_log: true
-
-    - name: Read current home.arpa records
-      ansible.builtin.uri:
-        url: "{{ technitium_api }}/zones/records/get?domain={{ item.name | urlencode }}&zone=home.arpa"
-        headers:
-          Authorization: "Bearer {{ technitium_token }}"
-        return_content: true
-        status_code: 200
-      loop: "{{ technitium_records }}"
-      register: technitium_record_queries
       no_log: true
 
     - name: Reconcile home.arpa address records
@@ -161,23 +150,20 @@
           Authorization: "Bearer {{ technitium_token }}"
         body_format: form-urlencoded
         body:
-          domain: "{{ item.item.name }}"
+          domain: "{{ item.name }}"
           zone: home.arpa
           type: A
           ttl: 300
           overwrite: true
-          ipAddress: "{{ item.item.address }}"
-          ptr: "{{ item.item.ptr }}"
-          createPtrZone: "{{ item.item.ptr }}"
+          ipAddress: "{{ item.address }}"
+          ptr: "{{ item.ptr }}"
+          createPtrZone: "{{ item.ptr }}"
           comments: Managed by Ansible
         status_code: 200
-      loop: "{{ technitium_record_queries.results }}"
-      when: >-
-        item.item.address not in
-        (item.json.response.records
-        | selectattr('type', 'equalto', 'A')
-        | map(attribute='rData.ipAddress')
-        | list)
+      loop: "{{ technitium_records }}"
+      register: technitium_record_write
+      failed_when: technitium_record_write.json.status | default('error') != 'ok'
+      changed_when: true
       no_log: true
 
     - name: Download block lists now
@@ -188,4 +174,6 @@
           Authorization: "Bearer {{ technitium_token }}"
         status_code: 200
         timeout: 900
+      register: technitium_block_list_update
+      failed_when: technitium_block_list_update.json.status | default('error') != 'ok'
       no_log: true

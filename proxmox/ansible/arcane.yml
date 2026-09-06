@@ -4,8 +4,8 @@
   gather_facts: false
   vars:
     arcane_image: ghcr.io/getarcaneapp/manager:v2.10.1
-    arcane_url: http://10.0.0.60:3552
-    controller_secret_dir: "{{ lookup('env', 'HOME') }}/.config/infra-as-service"
+    arcane_url: "http://{{ ansible_host }}:3552"
+    controller_secret_dir: "{{ playbook_dir }}/../../secrets/arcane"
     controller_api_key_file: "{{ controller_secret_dir }}/arcane-api-key"
     rotate_arcane_api_key: false
 
@@ -54,6 +54,9 @@
         enabled: true
         state: started
 
+    - name: Restart Compose containers according to their policies after boot
+      ansible.builtin.import_tasks: tasks/podman-boot.yml
+
     - name: Create Arcane configuration directory
       ansible.builtin.file:
         path: /etc/arcane
@@ -81,7 +84,7 @@
       when: rotate_arcane_api_key | bool or not controller_api_key.stat.exists
       no_log: true
 
-    - name: Save the Arcane API key outside the project
+    - name: Save the Arcane API key in the ignored secrets directory
       ansible.builtin.copy:
         dest: "{{ controller_api_key_file }}"
         content: "arc_sk_{{ generated_api_key.stdout }}\n"
@@ -120,6 +123,15 @@
           PGID=0
           ENCRYPTION_KEY={{ arcane_key.stdout }}
       when: not arcane_env.stat.exists
+      no_log: true
+
+    - name: Reconcile the Arcane public URL
+      ansible.builtin.lineinfile:
+        path: /etc/arcane/arcane.env
+        regexp: '^APP_URL='
+        line: "APP_URL={{ arcane_url }}"
+        mode: "0600"
+      register: arcane_url_line
       no_log: true
 
     - name: Configure the static Arcane automation API key
@@ -175,7 +187,7 @@
       ansible.builtin.systemd_service:
         name: arcane.service
         enabled: true
-        state: "{{ 'restarted' if (arcane_quadlet.changed or arcane_api_key_line.changed) else 'started' }}"
+        state: "{{ 'restarted' if (arcane_quadlet.changed or arcane_api_key_line.changed or arcane_url_line.changed) else 'started' }}"
 
     - name: Wait for Arcane health endpoint
       ansible.builtin.uri:

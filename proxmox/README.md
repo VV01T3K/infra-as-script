@@ -8,7 +8,7 @@ The installer uses these fixed network settings:
 - interface: wired Ethernet matching `en*`
 
 The answer file authorizes the dedicated SSH key at
-`~/.ssh/proxmox_bootstrap` on the Linux controller.
+`../secrets/proxmox/proxmox_bootstrap` on the Linux controller.
 
 ## Install and configure
 
@@ -19,7 +19,7 @@ The answer file authorizes the dedicated SSH key at
 5. In Ubuntu WSL, run:
 
    ```bash
-   cd /mnt/c/Users/Wojtek/Projects/InfraASService/proxmox/ansible
+   cd /mnt/c/Users/Wojtek/Projects/infra-as-script/proxmox/ansible
    ansible-playbook -i inventory.yml ready.yml
    ```
 
@@ -32,7 +32,7 @@ Ansible waits for SSH, then verifies Proxmox and its API. Open
 Prepare a new single-node host before creating guests:
 
 ```bash
-cd /mnt/c/Users/Wojtek/Projects/InfraASService/proxmox/ansible
+cd /mnt/c/Users/Wojtek/Projects/infra-as-script/proxmox/ansible
 ansible-playbook -i inventory.yml site.yml
 ```
 
@@ -43,11 +43,10 @@ reboots when needed, checks KVM, storage, and SSD health, creates a dedicated
 API token, and enables a management firewall.
 
 The API secret is written with mode `0600` to
-`~/.config/infra-as-service/proxmox.env` in WSL. It is never stored in this
-project. Load it later with:
+`../secrets/proxmox/proxmox.env` in WSL. This folder is ignored by Git. From `proxmox/`, load it with:
 
 ```bash
-source ~/.config/infra-as-service/proxmox.env
+source ../secrets/proxmox/proxmox.env
 ```
 
 ## Address plan
@@ -72,33 +71,45 @@ The first OpenTofu resource is an unprivileged Debian 13 LXC:
 - resources: 2 CPU cores, 2 GB RAM, 12 GB disk
 - application: Arcane on Podman (Docker is not installed)
 
-From the repository's `proxmox` directory on Linux or WSL, create the LXC and
-configure the application with one command:
+From the repository's `proxmox/` directory on Linux or WSL, provision the guest
+with OpenTofu, then configure services with Ansible:
 
 ```bash
-bash deploy-arcane.sh
+export PATH="$HOME/.local/bin:$HOME/.local/usr/bin:$PATH"
+source ../secrets/proxmox/proxmox.env
+export TF_VAR_ssh_public_key="$(ssh-keygen -y -f ../secrets/proxmox/proxmox_bootstrap)"
+ansible-playbook -i ansible/inventory.yml ansible/template.yml
+tofu -chdir=tofu init
+tofu -chdir=tofu apply
+ansible-playbook -i ansible/inventory.yml ansible/deploy.yml
 ```
 
-The command requires `gh` to be logged in as a repository administrator. On
-its first run it generates a dedicated SSH key outside the project and adds
-only the public half to GitHub as a read-only deploy key. It then loads the
-Proxmox API token, lets Ansible ensure the pinned Debian template exists, runs
-OpenTofu, waits for SSH, installs Podman, and verifies Arcane. Open
-`http://10.0.0.60:3552` when it completes.
+The controller needs OpenTofu, Ansible, Python 3, GitHub CLI, OpenSSH tools,
+and `dig` (`sudo apt install dnsutils` on Ubuntu/WSL). OpenTofu displays its
+plan and asks before applying. Its LXC resource has `prevent_destroy` protection.
+OpenTofu owns guest resources; Ansible owns configuration and operational workflows.
+Do not run OpenTofu changes concurrently with deployment or maintenance.
 
-The same command also prepares Technitium's local secret and data directories,
+The deployment playbook requires `gh` to be logged in as a repository
+administrator. It generates a dedicated key in `secrets/arcane/` and registers
+only its public half with GitHub as a read-only deploy key. It reads the applied
+guest address from OpenTofu, installs Podman, and configures Arcane. Open
+`http://10.0.0.60:3552` when it completes. Use the [maintenance playbook](UPDATES.md)
+for updates to an existing installation so backups run first.
+
+The deployment playbook also prepares Technitium's local secret and data directories,
 then asks Arcane to sync [`apps/technitium/compose.yaml`](../apps/technitium/compose.yaml)
 from the private GitHub repository. Its DNS service listens on `10.0.0.60`
 TCP/UDP port `53`, and its web console is at `http://10.0.0.60:5380`. Sign in
 as `admin`; read the generated password with:
 
 ```bash
-cat ~/.config/infra-as-service/technitium-admin-password
+cat ../secrets/technitium/technitium-admin-password
 ```
 
 Ansible owns Arcane's Quadlet and the host-side secret/data preparation. Arcane
-owns Technitium's Compose lifecycle and checks Git every five minutes. The
-repository contains no credentials or DNS data; Technitium keeps settings and
+owns Technitium's Compose lifecycle; Git sync is explicitly triggered after backups. The
+Git history contains no credentials or DNS data; Technitium keeps settings and
 zones in `/var/lib/technitium/config` on the LXC.
 
 Ansible also configures Technitium as the replacement for the previous
@@ -121,10 +132,67 @@ Keep that state file: it is required for safe updates and destruction. To view
 the proposed changes later, run:
 
 ```bash
-source ~/.config/infra-as-service/proxmox.env
-export TF_VAR_ssh_public_key="$(ssh-keygen -y -f ~/.ssh/proxmox_bootstrap)"
+source ../secrets/proxmox/proxmox.env
+export TF_VAR_ssh_public_key="$(ssh-keygen -y -f ../secrets/proxmox/proxmox_bootstrap)"
 tofu -chdir=tofu plan
 ```
+
+Deployment loads an in-memory Ansible inventory from OpenTofu's applied
+`arcane` output. Ansible uses that address for Arcane's URL and the DNS records;
+the Proxmox address comes from `ansible/inventory.yml`. Shared record definitions
+live in `ansible/group_vars/all.yml`. Ansible owns the complete A record sets at
+those three names and reapplies their address, TTL, comments, and requested PTR
+records on each run. Retired names and old reverse records are not deleted
+automatically; remove them explicitly when changing the address plan.
+
+The final deployment step tests local and external DNS over UDP and TCP from
+the controller, plus the managed reverse records. To repeat those checks:
+
+```bash
+ansible-playbook -i ansible/inventory.yml ansible/verify.yml
+```
+
+To check blocking too, set `dns_blocked_test_name` in the shared variables to a
+known domain in a downloaded block list, or pass `-e dns_blocked_test_name=DOMAIN`
+to the verification playbook. This optional query is explicitly reported as
+skipped until configured. The controller must reach the guest from an allowed
+LAN address.
+
+## Ansible entry points
+
+Run these from `proxmox/` with `ansible-playbook -i ansible/inventory.yml ansible/NAME.yml`:
+
+| Playbook | Purpose |
+| --- | --- |
+| `site.yml` | Bootstrap the Proxmox host |
+| `template.yml` | Prepare the Debian template before OpenTofu apply |
+| `deploy.yml` | Configure services after provisioning |
+| `update.yml` | Back up and update one component; see UPDATES.md for variables |
+| `pause.yml` | Disable automatic application sync |
+| `backup-all.yml` | Back up controller and guest; see RECOVERY.md for destinations |
+| `verify.yml` | Check service health and DNS using applied inventory |
+| `prepare-usb.yml` | Build the installer USBs; see usb/README.md |
+| `validate.yml` | Validate configuration and run local tests |
+
+Deployment, update, pause, and combined backup share a checkout-local lock.
+See [UPDATES.md](UPDATES.md) for inspecting and releasing it after a failed run.
+Other playbooks are reusable building blocks; they do not acquire that lock.
+
+## Validation and recovery
+
+For routine host, guest, Arcane, and Technitium updates, use the
+[update workflow](UPDATES.md). It backs up before changing the selected component
+and checks service health afterward. Existing installations should run its
+`pause.yml` step before publishing a new application version.
+
+Run `ansible-playbook ansible/validate.yml` for OpenTofu format/validation,
+Ansible syntax, and local integration tests (requires PyYAML and GPG). On a fresh checkout, run `tofu -chdir=tofu init -backend=false`
+first to install the pinned provider. These checks do not deploy infrastructure.
+
+Use the [backup and recovery workflow](RECOVERY.md) before putting important
+data on this guest. It includes an explicit Proxmox backup playbook, encrypted
+controller backups, and an isolated restore drill. A destination and recurring
+backup schedule still need to be chosen for your hardware.
 
 The files and Linux command needed to recreate the Ventoy installer are in
 [`usb/`](usb/README.md).

@@ -1,0 +1,23 @@
+---
+- name: Verify the application host and web services
+  hosts: arcane
+  gather_facts: false
+  tasks:
+    - name: Wait for the guest after maintenance
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Wait for Arcane and Technitium from the controller
+      ansible.builtin.uri:
+        url: "http://{{ hostvars[inventory_hostname].ansible_host }}:{{ item }}"
+        status_code: 200
+      delegate_to: localhost
+      loop:
+        - 3552/api/health
+        - 5380/
+      register: service_health
+      retries: 30
+      delay: 5
+      until: service_health.status == 200
+
+- import_playbook: verify-dns.yml

@@ -10,3 +10,6 @@ proxmox_bootstrap
 *.pem
 proxmox/usb/profiles/*.toml
 !proxmox/usb/profiles/*.example.toml
+
+# Central local credentials (never commit)
+/secrets/

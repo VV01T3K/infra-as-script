@@ -1,6 +1,6 @@
 ---
 - name: Verify freshly installed Proxmox
-  hosts: all
+  hosts: pve
   gather_facts: false
   tasks:
     - name: Wait for SSH

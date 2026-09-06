@@ -1,0 +1,58 @@
+---
+- name: Save and encrypt Proxmox configuration before host updates
+  hosts: pve
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Create private remote staging
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: infra-host-backup-
+      register: host_backup_temp
+    - name: Create private controller staging
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: infra-host-backup-
+      delegate_to: localhost
+      register: controller_host_temp
+    - name: Archive, fetch, and encrypt host configuration
+      block:
+        - ansible.builtin.command:
+            argv: [tar, -czf, "{{ host_backup_temp.path }}/host-config.tar.gz", -C, /, etc]
+          changed_when: true
+        - ansible.builtin.fetch:
+            src: "{{ host_backup_temp.path }}/host-config.tar.gz"
+            dest: "{{ controller_host_temp.path }}/host-config.tar.gz"
+            flat: true
+          no_log: true
+        - name: Encrypt host configuration without exposing the passphrase in arguments
+          ansible.builtin.command:
+            argv:
+              - gpg
+              - --batch
+              - --pinentry-mode
+              - loopback
+              - --passphrase-fd
+              - '0'
+              - --symmetric
+              - --cipher-algo
+              - AES256
+              - --output
+              - "{{ hostvars['localhost'].run_dir }}/host-config.tar.gz.gpg"
+              - "{{ controller_host_temp.path }}/host-config.tar.gz"
+            stdin: "{{ hostvars['localhost'].encryption_passphrase }}"
+          delegate_to: localhost
+          no_log: true
+          changed_when: true
+        - ansible.builtin.file:
+            path: "{{ hostvars['localhost'].run_dir }}/host-config.tar.gz.gpg"
+            mode: '0600'
+          delegate_to: localhost
+      always:
+        - ansible.builtin.file:
+            path: "{{ controller_host_temp.path }}"
+            state: absent
+          delegate_to: localhost
+        - ansible.builtin.file:
+            path: "{{ host_backup_temp.path }}"
+            state: absent

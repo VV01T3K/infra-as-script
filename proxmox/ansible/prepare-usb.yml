@@ -1,0 +1,104 @@
+---
+- name: Prepare the Ventoy and Proxmox answer USBs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    answer_profile: "{{ playbook_dir }}/../../secrets/proxmox/old-laptop.toml"
+    source_name: proxmox-ve_9.2-1.iso
+    auto_name: proxmox-ve_9.2-1-auto.iso
+  tasks:
+    - name: Require explicit source and mounted destinations
+      ansible.builtin.assert:
+        that:
+          - source_iso | default('') is abs
+          - ventoy_mount | default('') is abs
+          - answer_mount | default('') is abs
+          - source_iso | basename == source_name
+          - not ansible_check_mode
+    - name: Resolve the mounted destination paths
+      ansible.builtin.command:
+        argv: [realpath, -e, "{{ item }}"]
+      loop: ["{{ ventoy_mount }}", "{{ answer_mount }}"]
+      register: usb_paths
+      changed_when: false
+    - name: Require two different drives
+      ansible.builtin.assert:
+        that: usb_paths.results[0].stdout != usb_paths.results[1].stdout
+    - name: Require mounted destinations
+      ansible.builtin.command:
+        argv: [mountpoint, -q, --, "{{ item }}"]
+      loop: ["{{ ventoy_mount }}", "{{ answer_mount }}"]
+      changed_when: false
+    - name: Require writable destinations
+      ansible.builtin.command:
+        argv: [test, -w, "{{ item }}"]
+      loop: ["{{ ventoy_mount }}", "{{ answer_mount }}"]
+      changed_when: false
+    - name: Read answer filesystem source
+      ansible.builtin.command:
+        argv: [findmnt, -n, -o, SOURCE, --target, "{{ answer_mount }}"]
+      register: answer_source
+      changed_when: false
+    - name: Read physical answer partition label
+      ansible.builtin.command:
+        argv: [lsblk, -dn, -o, LABEL, "{{ answer_source.stdout }}"]
+      register: answer_label
+      changed_when: false
+      when: answer_source.stdout.startswith('/dev/')
+    - name: Require the installer answer label on physical devices
+      ansible.builtin.assert:
+        that: answer_label.stdout | trim == 'proxmox-ais'
+      when: answer_source.stdout.startswith('/dev/')
+    - name: Calculate source ISO checksum
+      ansible.builtin.stat:
+        path: "{{ source_iso }}"
+        checksum_algorithm: sha256
+      register: source_image
+    - name: Require the pinned official ISO
+      ansible.builtin.assert:
+        that:
+          - source_image.stat.isreg | default(false)
+          - source_image.stat.checksum == lookup('file', playbook_dir + '/../usb/SHA256SUMS').split()[0]
+    - name: Validate the private installer profile
+      ansible.builtin.command:
+        argv: [proxmox-auto-install-assistant, validate-answer, "{{ answer_profile }}"]
+      changed_when: false
+      no_log: true
+    - ansible.builtin.file:
+        path: "{{ ventoy_mount }}/{{ item }}"
+        state: directory
+        mode: '0755'
+      loop: [ISO, ventoy, PROXMOX-CONFIGS]
+    - name: Copy installer profiles to the USBs
+      ansible.builtin.copy:
+        src: "{{ answer_profile }}"
+        dest: "{{ item }}"
+        mode: '0644'
+      loop:
+        - "{{ answer_mount }}/answer.toml"
+        - "{{ ventoy_mount }}/PROXMOX-CONFIGS/{{ answer_profile | basename }}"
+      no_log: true
+    - ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../usb/ventoy/ventoy.json"
+        dest: "{{ ventoy_mount }}/ventoy/ventoy.json"
+        mode: '0644'
+    - name: Allocate an isolated build directory on the boot USB
+      ansible.builtin.tempfile:
+        state: directory
+        path: "{{ ventoy_mount }}/ISO"
+        prefix: .proxmox-build-
+      register: iso_staging
+    - name: Build and publish the automated ISO
+      block:
+        - ansible.builtin.command:
+            argv: [proxmox-auto-install-assistant, prepare-iso, "{{ source_iso }}", --fetch-from, partition, --partition-label, proxmox-ais, --output, "{{ iso_staging.path }}/{{ auto_name }}"]
+          changed_when: true
+        - ansible.builtin.command:
+            argv: [mv, -f, --, "{{ iso_staging.path }}/{{ auto_name }}", "{{ ventoy_mount }}/ISO/{{ auto_name }}"]
+          changed_when: true
+      always:
+        - ansible.builtin.file:
+            path: "{{ iso_staging.path }}"
+            state: absent

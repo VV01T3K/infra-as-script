@@ -1,0 +1,57 @@
+---
+- name: Pause automatic Technitium deployments
+  hosts: arcane
+  gather_facts: false
+  vars:
+    arcane_api: http://127.0.0.1:3552/api
+  tasks:
+    - name: Prepare Compose container recovery before the backup restarts the guest
+      ansible.builtin.import_tasks: tasks/podman-boot.yml
+
+    - name: Read the controller API key
+      ansible.builtin.slurp:
+        src: "{{ playbook_dir }}/../../secrets/arcane/arcane-api-key"
+      delegate_to: localhost
+      register: maintenance_key
+      no_log: true
+
+    - name: Find the existing Technitium sync
+      ansible.builtin.uri:
+        url: "{{ arcane_api }}/environments/0/gitops-syncs?search=technitium&start=0&limit=100"
+        headers:
+          X-Api-Key: "{{ maintenance_key.content | b64decode | trim }}"
+        status_code: 200
+      register: maintenance_syncs
+      no_log: true
+
+    - name: Select the existing sync
+      ansible.builtin.set_fact:
+        maintenance_sync: "{{ maintenance_syncs.json.data | selectattr('name', 'equalto', 'technitium') | list }}"
+      no_log: true
+
+    - name: Require exactly one deployed Technitium sync
+      ansible.builtin.assert:
+        that: maintenance_sync | length == 1
+        fail_msg: Run the initial deployment first; maintenance requires an existing Technitium sync.
+
+    - name: Disable scheduled syncs without triggering a deployment
+      ansible.builtin.uri:
+        url: "{{ arcane_api }}/environments/0/gitops-syncs/{{ maintenance_sync[0].id }}"
+        method: PUT
+        headers:
+          X-Api-Key: "{{ maintenance_key.content | b64decode | trim }}"
+        body_format: json
+        body:
+          autoSync: false
+        status_code: 200
+      no_log: true
+
+    - name: Verify scheduled syncs are disabled
+      ansible.builtin.uri:
+        url: "{{ arcane_api }}/environments/0/gitops-syncs/{{ maintenance_sync[0].id }}"
+        headers:
+          X-Api-Key: "{{ maintenance_key.content | b64decode | trim }}"
+        status_code: 200
+      register: paused_sync
+      failed_when: paused_sync.json.data.autoSync | default(true) | bool
+      no_log: true

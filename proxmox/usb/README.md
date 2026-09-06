@@ -26,7 +26,7 @@ sudo apt-get install -y "$package"
 
 Download the original ISO from
 `https://enterprise.proxmox.com/iso/proxmox-ve_9.2-1.iso`. The preparation
-script verifies its official SHA-256 checksum from `SHA256SUMS`.
+playbook verifies its official SHA-256 checksum from `SHA256SUMS`.
 
 ## Build and populate the USBs
 
@@ -34,23 +34,27 @@ Create the local installer profile once. It is deliberately ignored by Git
 because it contains a reusable root password hash:
 
 ```bash
-cp profiles/old-laptop.example.toml profiles/old-laptop.toml
+mkdir -p ../../secrets
+cp profiles/old-laptop.example.toml ../../secrets/proxmox/old-laptop.toml
 ```
 
 Replace both placeholders in the copied file. Generate the password hash with
-`openssl passwd -6`, and copy the public key from
-`~/.ssh/proxmox_bootstrap.pub`.
+`openssl passwd -6`, and derive the public key with
+`ssh-keygen -y -f ../../secrets/proxmox/proxmox_bootstrap`.
 
 Run on Linux, or from Ubuntu WSL with the Ventoy drive mounted at `/mnt/d` and
 the answer drive mounted at `/mnt/e`:
 
 ```bash
-cd /mnt/c/Users/Wojtek/Projects/InfraASService/proxmox/usb
-bash prepare-usb.sh /mnt/d/ISO/proxmox-ve_9.2-1.iso /mnt/d /mnt/e
+cd /mnt/c/Users/Wojtek/Projects/infra-as-script/proxmox/usb
+ansible-playbook ../ansible/prepare-usb.yml \
+  -e source_iso=/mnt/d/ISO/proxmox-ve_9.2-1.iso \
+  -e ventoy_mount=/mnt/d \
+  -e answer_mount=/mnt/e
 ```
 
-For new drives, give the script the original ISO, mounted Ventoy partition and
-mounted answer partition, in that order. The script:
+For new drives, supply the original ISO and both mounted partitions using the
+variables above. Override `answer_profile` to select a different profile. The playbook:
 
 1. validates the source ISO and answer profile;
 2. copies `answer.toml` to the separate answer drive;
@@ -69,5 +73,4 @@ To switch profiles without rebuilding the ISO, copy another profile to the
 answer USB root as `answer.toml`.
 
 The current setup was built with `proxmox-auto-install-assistant 9.0.6`.
-Back up `~/.ssh/proxmox_bootstrap` separately. The repository stores only its
-public key.
+The controller backup includes `secrets/`, including the SSH key and installer profile.
