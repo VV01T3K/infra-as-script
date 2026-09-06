@@ -12,4 +12,5 @@ installer/**/*.toml
 !installer/**/*.example.toml
 
 # Central local credentials (never commit)
-/secrets/
+/secrets/*
+!/secrets/README.md

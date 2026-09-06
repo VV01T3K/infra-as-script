@@ -49,7 +49,7 @@
       ansible.builtin.assert:
         that:
           - matching_keys | length <= 1
-          - matching_keys | length == 0 or matching_keys[0].key == public_key.stdout
+          - matching_keys | length == 0 or matching_keys[0].key == (public_key.stdout.split()[:2] | join(' '))
           - matching_keys | length == 0 or matching_keys[0].read_only
     - name: Register the public key with read-only access
       ansible.builtin.command:

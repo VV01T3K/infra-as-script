@@ -59,3 +59,7 @@ replacing `answer.toml`; the prepared ISO stays the same.
 
 Completed profiles live in `installer/profiles/`. They are git-ignored and included
 in controller backups. Placeholder examples remain tracked.
+
+After successful host setup, Ansible replaces the installed root password and
+SSH key. USB profiles remain reusable; the original private key is retained as
+`profiles/old-laptop.key` for reinstalling. See [credential management](../secrets/README.md).

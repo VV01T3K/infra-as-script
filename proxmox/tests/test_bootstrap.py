@@ -33,7 +33,7 @@ elif args[0] == 'api':
 elif args[:3] == ['repo', 'deploy-key', 'add']:
     if state.exists(): sys.exit(9)
     state.write_text(json.dumps([{'title': 'arcane-gitops',
-        'key': pathlib.Path(args[3]).read_text().strip(), 'read_only': True}]))
+        'key': ' '.join(pathlib.Path(args[3]).read_text().split()[:2]), 'read_only': True}]))
 else: sys.exit(8)
 """)
             gh.chmod(0o700)

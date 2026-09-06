@@ -42,7 +42,9 @@ The complete playbook verifies access, configures the no-subscription repository
 hides the subscription notice, disables unused cluster services, prevents
 laptop suspend, enables SSD trimming, restricts SSH to the bootstrap key,
 reboots when needed, checks KVM, storage, and SSD health, creates a dedicated
-API token, and enables a management firewall.
+API token, and enables a management firewall. It then replaces the installer
+root password and SSH key once per installed host, before guest provisioning.
+See [credential management](../secrets/README.md) for existing deployments and reinstalls.
 
 The API secret is written with mode `0600` to
 `../secrets/proxmox/proxmox.env` in WSL. This folder is ignored by Git. From `proxmox/`, load it with:
@@ -166,7 +168,8 @@ Run these from `proxmox/` with `ansible-playbook -i ansible/inventory.yml ansibl
 
 | Playbook | Purpose |
 | --- | --- |
-| `site.yml` | Bootstrap the Proxmox host |
+| `site.yml` | Bootstrap the Proxmox host and retire installer credentials |
+| `secrets.yml` | Generate or rotate credentials; see ../secrets/README.md |
 | `template.yml` | Prepare the Debian template before OpenTofu apply |
 | `deploy.yml` | Configure services after provisioning |
 | `update.yml` | Back up and update one component; see UPDATES.md for variables |

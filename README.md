@@ -37,6 +37,7 @@ Deployment and Ansible read credentials here; controller backups include it.
 - `technitium/`: DNS admin password
 
 Add a folder per service as more credentials are introduced.
+See [secrets/README.md](secrets/README.md) for generation, rotation, and recovery.
 
 Service runtime copies remain on their hosts. OpenTofu state remains in
 `proxmox/tofu/` and is also ignored and included in controller backups.

@@ -4,7 +4,7 @@
   gather_facts: false
   vars:
     automation_user: automation@pve
-    automation_token: iac
+    automation_token: "{{ lookup('file', token_directory + '/token-id', errors='ignore') | default('iac', true) | trim }}"
     management_network: 10.0.0.0/24
     token_directory: "{{ playbook_dir }}/../../secrets/proxmox"
     token_file: "{{ token_directory }}/proxmox.env"

@@ -76,7 +76,7 @@ revision, target, storage, and completion status. The guest archive itself is
 on the selected Proxmox storage. Failed backups prevent the update from starting;
 failed updates or health checks return an error and never mark the run verified.
 The directory lock at `secrets/proxmox/maintenance.lock.d` coordinates deployment,
-maintenance, pause, and combined backup entry points on this checkout. It does
+maintenance, credential rotation, pause, and combined backup entry points on this checkout. It does
 not coordinate OpenTofu commands, other checkouts, individual component playbooks,
 or UI work. Successful workflows release it; failures retain it for inspection.
 
