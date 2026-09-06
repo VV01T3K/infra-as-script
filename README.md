@@ -28,11 +28,11 @@ its own directory under `apps/` and an explicit owner for secrets and data.
 
 ## Local secrets
 
-Keep passwords, API tokens, private keys, and the private installer profile in
+Keep passwords, API tokens, and private keys in
 [`secrets/`](secrets/) at the repository root. The entire folder is ignored by Git.
 Deployment and Ansible read credentials here; controller backups include it.
 
-- `proxmox/`: API token (`proxmox.env`), bootstrap SSH key, and installer profile
+- `proxmox/`: API token (`proxmox.env`) and bootstrap SSH key
 - `arcane/`: API key and GitHub deploy key
 - `technitium/`: DNS admin password
 
@@ -40,3 +40,6 @@ Add a folder per service as more credentials are introduced.
 
 Service runtime copies remain on their hosts. OpenTofu state remains in
 `proxmox/tofu/` and is also ignored and included in controller backups.
+
+Machine-specific installer profiles live in `installer/profiles/` and are also
+ignored by Git; placeholder examples remain tracked.

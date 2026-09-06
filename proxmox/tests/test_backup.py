@@ -17,7 +17,8 @@ class BackupTests(unittest.TestCase):
             project = root / "repo/proxmox"
             source = Path(__file__).resolve().parents[1] / "ansible"
             shutil.copytree(source, project / "ansible")
-            inputs = {"secrets/technitium/admin-password": "synthetic secret",
+            inputs = {"installer/profiles/old-laptop.toml": "synthetic installer profile",
+                      "secrets/technitium/admin-password": "synthetic secret",
                       "secrets/proxmox/proxmox_bootstrap": "synthetic private key"}
             for name, value in inputs.items():
                 path = project.parent / name

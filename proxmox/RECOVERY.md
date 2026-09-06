@@ -29,7 +29,7 @@ Revisit coverage if you add LXC mount points or external volumes.
 
 The controller backup playbook prompts for a GPG passphrase and streams the archive
 directly into encryption. It includes the repository's `secrets/` folder (including the bootstrap
-private SSH key and installer profile), and `terraform.tfstate`. Store the passphrase separately and
+private SSH key), `installer/profiles/`, and `terraform.tfstate`. Store the passphrase separately and
 keep an additional copy of both backups off the Proxmox machine. Record the
 repository commit (`git rev-parse HEAD`) and preserve any uncommitted changes.
 The controller archive does not contain the Git-managed repository files.
@@ -50,7 +50,7 @@ on that storage to match its capacity. No schedule is installed by this change.
    gpg --decrypt /path/to/controller.tar.gz.gpg | tar -xzf - -C "$recovery_dir"
    ```
 
-   Check decryption and extraction succeeded. Restore `secrets/` into the repository root, and `terraform.tfstate`
+   Check decryption and extraction succeeded. Restore `secrets/` and `installer/profiles/` into the repository root, and `terraform.tfstate`
    into `proxmox/tofu/`. Preserve any existing files separately before replacing
    them. Keep directories mode `0700` and secrets mode `0600`.
 

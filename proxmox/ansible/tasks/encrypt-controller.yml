@@ -10,6 +10,7 @@
 - ansible.builtin.stat:
     path: "{{ item }}"
   loop:
+    - "{{ playbook_dir }}/../../installer/profiles"
     - "{{ playbook_dir }}/../../secrets"
     - "{{ playbook_dir }}/../../secrets/proxmox/proxmox_bootstrap"
     - "{{ playbook_dir }}/../tofu/terraform.tfstate"
@@ -34,7 +35,7 @@
     - name: Stream tar directly into GPG without a plaintext archive
       ansible.builtin.shell: |
         set -euo pipefail
-        tar -czf - -C "$REPO_ROOT" --exclude=secrets/proxmox/maintenance.lock.d secrets -C "$TOFU_DIR" terraform.tfstate |
+        tar -czf - -C "$REPO_ROOT" --exclude=secrets/proxmox/maintenance.lock.d secrets installer/profiles -C "$TOFU_DIR" terraform.tfstate |
           gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 --symmetric --cipher-algo AES256 --output "$ENCRYPTED_PATH" 3<<< "$BACKUP_PASSPHRASE"
       args:
         executable: /bin/bash

@@ -10,8 +10,8 @@ Ansible and OpenTofu start after Proxmox is installed.
   your existing Ventoy USB. ISO files are ignored by Git. This image is not
   currently present in this checkout.
 - `ventoy/ventoy.json`: Ventoy menu configuration.
-- `answer.example.toml`: an example profile for reference. Use the completed
-  private profile at `../secrets/proxmox/old-laptop.toml` for installation.
+- `profiles/old-laptop.example.toml`: an example profile for reference. Use the completed
+  private profile at `profiles/old-laptop.toml` for installation.
 - `SOURCE-SHA256SUMS`: checksum of the original, unmodified ISO for reference;
   it does not verify the prepared `-auto.iso` image.
 
@@ -28,7 +28,7 @@ answer drive. Set the answer drive's filesystem label to exactly `proxmox-ais`.
 | --- | --- |
 | `installer/proxmox-ve_9.2-1-auto.iso` | Ventoy USB: `ISO/proxmox-ve_9.2-1-auto.iso` |
 | `installer/ventoy/ventoy.json` | Ventoy USB: `ventoy/ventoy.json` |
-| `secrets/proxmox/old-laptop.toml` | Answer USB: `answer.toml` at the drive root |
+| `installer/profiles/old-laptop.toml` | Answer USB: `answer.toml` at the drive root |
 
 Create the `ISO` and `ventoy` folders on the Ventoy drive if needed. Copy the
 files using your file manager; rename the private profile to `answer.toml` on
@@ -57,5 +57,5 @@ replacing `answer.toml`; the prepared ISO stays the same.
    it on again.
 5. Continue with the host setup commands in [proxmox/README.md](../proxmox/README.md).
 
-The private profile contains a reusable password hash; its canonical copy stays
-in the git-ignored `secrets/proxmox/` folder and is included in controller backups.
+Completed profiles live in `installer/profiles/`. They are git-ignored and included
+in controller backups. Placeholder examples remain tracked.
