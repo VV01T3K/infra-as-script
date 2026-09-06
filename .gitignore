@@ -8,8 +8,8 @@ proxmox_bootstrap
 *.env
 *.key
 *.pem
-proxmox/usb/profiles/*.toml
-!proxmox/usb/profiles/*.example.toml
+installer/*.toml
+!installer/*.example.toml
 
 # Central local credentials (never commit)
 /secrets/

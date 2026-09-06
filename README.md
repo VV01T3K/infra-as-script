@@ -13,7 +13,8 @@ The first Git-managed application is Technitium DNS at `10.0.0.60`. Arcane
 itself remains an Ansible-managed Quadlet because it must be running before it
 can pull this repository.
 
-See [`proxmox/README.md`](proxmox/README.md) for installation and deployment.
+Prepare installation media manually using [`installer/README.md`](installer/README.md).
+Then use [`proxmox/README.md`](proxmox/README.md) for host configuration and deployment.
 See [`proxmox/RECOVERY.md`](proxmox/RECOVERY.md) for backups and restore drills.
 See [`proxmox/UPDATES.md`](proxmox/UPDATES.md) for routine updates with backups and health checks.
 

@@ -12,6 +12,8 @@ The answer file authorizes the dedicated SSH key at
 
 ## Install and configure
 
+Prepare the two USBs manually using [the installer guide](../installer/README.md) first.
+
 1. Connect the laptop to Ethernet.
 2. Insert the Ventoy USB and power on the laptop.
 3. Wait for the installer to power the laptop off.
@@ -171,7 +173,6 @@ Run these from `proxmox/` with `ansible-playbook -i ansible/inventory.yml ansibl
 | `pause.yml` | Disable automatic application sync |
 | `backup-all.yml` | Back up controller and guest; see RECOVERY.md for destinations |
 | `verify.yml` | Check service health and DNS using applied inventory |
-| `prepare-usb.yml` | Build the installer USBs; see usb/README.md |
 | `validate.yml` | Validate configuration and run local tests |
 
 Deployment, update, pause, and combined backup share a checkout-local lock.
@@ -194,5 +195,5 @@ data on this guest. It includes an explicit Proxmox backup playbook, encrypted
 controller backups, and an isolated restore drill. A destination and recurring
 backup schedule still need to be chosen for your hardware.
 
-The files and Linux command needed to recreate the Ventoy installer are in
-[`usb/`](usb/README.md).
+Manual installer materials and USB file-placement instructions live separately
+in [`installer/`](../installer/README.md). USB preparation is not part of these playbooks.
