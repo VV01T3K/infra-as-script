@@ -49,6 +49,15 @@ class BackupTests(unittest.TestCase):
             self.assertNotEqual(again.returncode, 0)
             self.assertEqual(archive.read_bytes(), encrypted)
             self.assertEqual(list(root.glob(".controller-encrypted-*")), [])
+            direct = ['bash', str(project / 'scripts/backup-controller.sh')]
+            unsafe = subprocess.run(direct + [str(project / 'secrets/backup.gpg')],
+                                    input='test-only\n', env=env, capture_output=True, text=True)
+            self.assertNotEqual(unsafe.returncode, 0)
+            self.assertFalse((project / 'secrets/backup.gpg').exists())
+            empty = subprocess.run(direct + [str(root / 'empty.gpg')],
+                                   input='\n', env=env, capture_output=True, text=True)
+            self.assertNotEqual(empty.returncode, 0)
+            self.assertFalse((root / 'empty.gpg').exists())
             # Encryption failure must neither publish a backup nor leave staging files.
             archive.unlink()
             binaries = root / "bin"

@@ -1,0 +1,9 @@
+{
+  "name": "infra-as-script",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "check": "bash scripts/check.sh"
+  }
+}

@@ -9,7 +9,7 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 
 def copy_repository(destination):
     destination = Path(destination)
-    for name in ['ansible', 'inventory']:
+    for name in ['ansible', 'inventory', 'scripts']:
         shutil.copytree(REPOSITORY / name, destination / name)
     shutil.copytree(REPOSITORY / 'stages/02-post-install', destination / 'stages/02-post-install')
     shutil.copyfile(REPOSITORY / 'ansible.cfg', destination / 'ansible.cfg')

@@ -20,7 +20,7 @@ export ANSIBLE_CONFIG="$PWD/ansible.cfg"
 ansible-galaxy collection install -r ansible/requirements.yml
 ```
 
-The controller needs Ansible, Python 3.11+, OpenSSH, OpenSSL and OpenTofu (or
+The controller needs Ansible, Bash, flock, OpenSSH, OpenSSL and OpenTofu (or
 Terraform). ISO preparation also needs `proxmox-auto-install-assistant` and its
 dependencies on a supported Linux machine. Existing application/backup jobs have
 additional requirements such as GPG and the GitHub CLI.
@@ -28,7 +28,7 @@ additional requirements such as GPG and the GitHub CLI.
 1. Prepare the USB once. Review the address, network-interface and disk selectors
    in `stages/01-install/profiles/old-laptop.example.toml` first: installation
    erases the matching target disk. Generate an answer with
-   `python3 stages/01-install/prepare.py`. Repeating this keeps the same credentials;
+   `bash stages/01-install/prepare.sh`. Repeating this keeps the same credentials;
    `--regenerate` replaces only the installer files under `secrets/installer/pve/`
    and retains previous versions there. Rebuild the ISO after regeneration.
 
@@ -99,5 +99,15 @@ if DNS ownership is deliberately changed later.
 Validate without contacting the server:
 
 ```bash
-ansible-playbook ansible/playbooks/validate.yml
+bash scripts/check.sh
 ```
+
+Local operations live in `scripts/`: `check.sh` runs syntax checks and the existing
+Python integration test suite; `backup-controller.sh /absolute/backup.gpg` prompts
+for a passphrase and encrypts controller credentials and provisioning state to a
+destination outside the checkout. Stop other operations while making a standalone
+backup for a consistent snapshot.
+Ansible backup workflows call the same script while holding their checkout lock.
+Operational helpers use Bash; Python remains a dependency of Ansible and the
+existing tests (Python 3.11+ and PyYAML).
+The installer integration tests also require `proxmox-auto-install-assistant`.
