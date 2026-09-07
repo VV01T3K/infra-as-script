@@ -55,6 +55,8 @@ class UpdateTests(unittest.TestCase):
         for path in (self.ansible / 'playbooks').glob('*.yml'):
             plays = yaml.safe_load(path.read_text())
             for play in plays:
+                if 'import_playbook' in play:
+                    continue
                 play['gather_facts'] = False
                 play['tasks'] = [t for t in play.get('tasks', []) if 'ansible.builtin.setup' not in t]
             path.write_text(yaml.safe_dump(plays, sort_keys=False))
@@ -148,8 +150,7 @@ else: print('a'*40)
         success = subprocess.run(command, env=self.env, capture_output=True, text=True)
         self.assertEqual(success.returncode, 0, success.stdout + success.stderr)
         self.assertEqual(self.events.read_text().splitlines(),
-                         ['bootstrap-gitops', 'arcane', 'technitium', 'gitops',
-                          'technitium-config', 'verify-services'])
+                         ['bootstrap-gitops', 'arcane', 'gitops', 'verify-services'])
         self.assertFalse(self.lock.exists())
         self.reset_run()
         failure = subprocess.run(command, env=dict(self.env, FAIL_AT='arcane'),

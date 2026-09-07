@@ -1,7 +1,7 @@
 ---
 - name: Read the applied guest from OpenTofu
   ansible.builtin.command:
-    argv: [tofu, "-chdir={{ repo_root }}/opentofu/proxmox", output, -json, arcane]
+    argv: [tofu, "-chdir={{ repo_root }}/stages/03-provision/proxmox", output, -json, arcane]
   register: applied_guest_output
   changed_when: false
   check_mode: false

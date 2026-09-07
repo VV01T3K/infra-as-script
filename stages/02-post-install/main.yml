@@ -1,0 +1,111 @@
+- name: Lock deployment and maintenance on this checkout
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    secrets_action: post-install
+  tasks:
+  - name: Lock deployment and maintenance on this checkout
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: lock
+    when: secrets_action | default('status') != 'status'
+- name: Prepare the installer SSH handoff
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Create the runtime credential directory
+    ansible.builtin.file:
+      path: '{{ repo_root }}/secrets/proxmox'
+      state: directory
+      mode: '0700'
+  - name: Check for an existing runtime key
+    ansible.builtin.stat:
+      path: '{{ repo_root }}/secrets/proxmox/proxmox_bootstrap'
+    register: runtime_key
+  - name: Seed runtime access from the USB installer key
+    ansible.builtin.copy:
+      src: '{{ repo_root }}/secrets/installer/pve/bootstrap{{ item }}'
+      dest: '{{ repo_root }}/secrets/proxmox/proxmox_bootstrap{{ item }}'
+      mode: '0600'
+    loop:
+    - ''
+    - .pub
+    when: not runtime_key.stat.exists
+    no_log: true
+- name: Verify freshly installed Proxmox
+  hosts: pve
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Verify freshly installed Proxmox
+    ansible.builtin.import_role:
+      name: proxmox
+      tasks_from: ready
+- name: Prepare the Proxmox host
+  hosts: pve
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+  - name: Prepare the Proxmox host
+    ansible.builtin.import_role:
+      name: proxmox
+      tasks_from: configure
+- name: Configure Proxmox access and management firewall
+  hosts: pve
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Configure Proxmox access and management firewall
+    ansible.builtin.import_role:
+      name: proxmox
+      tasks_from: access
+- name: Prepare the pinned Debian LXC template
+  hosts: pve
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+  - name: Prepare the pinned Debian LXC template
+    ansible.builtin.import_role:
+      name: proxmox
+      tasks_from: template
+- name: Prepare credential management
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    secrets_action: post-install
+  tasks:
+  - name: Prepare credential management
+    ansible.builtin.import_role:
+      name: credentials
+      tasks_from: prepare
+- name: Generate or rotate managed credentials
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    secrets_action: post-install
+  tasks:
+  - name: Generate or rotate managed credentials
+    ansible.builtin.import_role:
+      name: credentials
+      tasks_from: manage
+- name: Release the lock after successful completion
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    secrets_action: post-install
+  any_errors_fatal: true
+  tasks:
+  - name: Release the lock after successful completion
+    ansible.builtin.import_role:
+      name: controller
+      tasks_from: unlock
+    when: secrets_action | default('status') != 'status'

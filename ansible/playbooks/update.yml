@@ -1,4 +1,3 @@
----
 - name: Lock deployment and maintenance on this checkout
   hosts: localhost
   connection: local
@@ -52,14 +51,16 @@
     ansible.builtin.import_role:
       name: technitium
       tasks_from: verify
+    when:
+    - manage_dns | default(false) | bool
 - name: Encrypt controller credentials before stopping services
   hosts: localhost
   connection: local
   gather_facts: false
   any_errors_fatal: true
   vars:
-    controller_backup_path: "{{ run_dir }}/controller.tar.gz.gpg"
-    backup_passphrase: "{{ encryption_passphrase }}"
+    controller_backup_path: '{{ run_dir }}/controller.tar.gz.gpg'
+    backup_passphrase: '{{ encryption_passphrase }}'
   tasks:
   - name: Encrypt controller credentials before stopping services
     ansible.builtin.import_role:
@@ -78,7 +79,7 @@
   hosts: pve
   gather_facts: false
   vars:
-    backup_report_path: "{{ hostvars['localhost'].run_dir }}/guest-backup.txt"
+    backup_report_path: '{{ hostvars[''localhost''].run_dir }}/guest-backup.txt'
   any_errors_fatal: true
   tasks:
   - name: Back up the application LXC to explicitly selected storage
@@ -113,6 +114,8 @@
     ansible.builtin.import_role:
       name: technitium
       tasks_from: verify
+    when:
+    - manage_dns | default(false) | bool
 - name: Record completed maintenance stage
   hosts: localhost
   connection: local
@@ -124,10 +127,10 @@
       name: maintenance
       tasks_from: backed_up
 - name: Upgrade packages within the installed Debian release
-  hosts: "{{ update_target | default('arcane') }}"
+  hosts: '{{ update_target | default(''arcane'') }}'
   gather_facts: false
   vars:
-    update_target: "{{ 'pve' if maintenance_target == 'host' else 'arcane' }}"
+    update_target: '{{ ''pve'' if maintenance_target == ''host'' else ''arcane'' }}'
   any_errors_fatal: true
   tasks:
   - name: Gather facts for the selected operation
@@ -142,7 +145,7 @@
   hosts: arcane
   gather_facts: false
   vars:
-    update_target: "{{ 'pve' if maintenance_target == 'host' else 'arcane' }}"
+    update_target: '{{ ''pve'' if maintenance_target == ''host'' else ''arcane'' }}'
   any_errors_fatal: true
   tasks:
   - name: Restore guest container startup after a package update
@@ -164,7 +167,7 @@
   hosts: arcane
   gather_facts: false
   vars:
-    expected_git_commit: "{{ hostvars['localhost'].expected_revision }}"
+    expected_git_commit: '{{ hostvars[''localhost''].expected_revision }}'
   any_errors_fatal: true
   tasks:
   - name: Configure Arcane GitOps projects
@@ -181,7 +184,9 @@
     ansible.builtin.import_role:
       name: technitium
       tasks_from: configure
-    when: maintenance_target == 'technitium'
+    when:
+    - maintenance_target == 'technitium'
+    - manage_dns | default(false) | bool
 - name: Verify freshly installed Proxmox
   hosts: pve
   gather_facts: false
@@ -210,6 +215,8 @@
     ansible.builtin.import_role:
       name: technitium
       tasks_from: verify
+    when:
+    - manage_dns | default(false) | bool
 - name: Record completed maintenance stage
   hosts: localhost
   connection: local

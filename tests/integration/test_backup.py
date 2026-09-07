@@ -17,14 +17,14 @@ class BackupTests(unittest.TestCase):
             root = Path(temporary)
             project = root / "repo"
             copy_repository(project)
-            inputs = {"installer/profiles/old-laptop.toml": "synthetic installer profile",
+            inputs = {"stages/01-install/profiles/old-laptop.toml": "synthetic installer profile",
                       "secrets/technitium/admin-password": "synthetic secret",
                       "secrets/proxmox/proxmox_bootstrap": "synthetic private key"}
             for name, value in inputs.items():
                 path = project / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(value)
-            (project / "opentofu/proxmox/terraform.tfstate").write_text('{"serial": 7}')
+            (project / "stages/03-provision/proxmox/terraform.tfstate").write_text('{"serial": 7}')
             gnupg = root / "gnupg"
             gnupg.mkdir(mode=0o700)
             env = environment(project, GNUPGHOME=str(gnupg), ANSIBLE_NOCOLOR="1")

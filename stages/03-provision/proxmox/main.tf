@@ -1,6 +1,6 @@
 locals {
-  node_name = "pve"
-  vm_id     = 200
+  node_name = var.node_name
+  vm_id     = var.vm_id
 }
 
 resource "proxmox_virtual_environment_container" "arcane" {
@@ -31,22 +31,17 @@ resource "proxmox_virtual_environment_container" "arcane" {
   }
 
   disk {
-    datastore_id = "local-lvm"
+    datastore_id = var.datastore_id
     size         = 12
   }
 
   initialization {
     hostname = "arcane"
 
-    dns {
-      domain  = "home.arpa"
-      servers = ["1.1.1.1"]
-    }
-
     ip_config {
       ipv4 {
         address = var.arcane_ip
-        gateway = "10.0.0.1"
+        gateway = var.gateway
       }
     }
 
@@ -57,11 +52,11 @@ resource "proxmox_virtual_environment_container" "arcane" {
 
   network_interface {
     name   = "eth0"
-    bridge = "vmbr0"
+    bridge = var.bridge
   }
 
   operating_system {
-    template_file_id = "local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst"
+    template_file_id = var.template_file_id
     type             = "debian"
   }
 

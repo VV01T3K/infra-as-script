@@ -20,7 +20,7 @@ class SecretTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.repo = self.root / 'repo'
         self.ansible = copy_repository(self.repo)
-        (self.repo / 'installer/profiles').mkdir(parents=True)
+        (self.repo / 'secrets/installer/pve').mkdir(parents=True)
         self.secrets = self.repo / 'secrets'
         self.bin = self.root / 'bin'
         self.bin.mkdir()
@@ -273,7 +273,7 @@ else: sys.exit(9)
         subprocess.run(['ssh-keygen','-q','-t','ed25519','-N','','-f',str(key)],check=True)
         public=Path(str(key)+'.pub').read_text().strip()
         (self.root/'pve-authorized').write_text(public+'\n')
-        (self.repo/'installer/profiles/old-laptop.toml').write_text(
+        (self.repo/'secrets/installer/pve/answer.toml').write_text(
             '[global]\nroot-ssh-keys = '+json.dumps([public])+'\n')
         self.tool('ssh','pass')
         first=self.run_secrets('post-install')

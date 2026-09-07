@@ -1,0 +1,7 @@
+---
+proxmox_node_name: pve
+proxmox_laptop: true
+proxmox_system_disk: /dev/sda
+proxmox_cluster_member: false
+management_network: 10.0.0.0/24
+proxmox_microcode_packages: [intel-microcode]

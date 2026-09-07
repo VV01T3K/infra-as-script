@@ -2,7 +2,6 @@
 - name: Limit maintenance to supported hosts and Debian 13
   ansible.builtin.assert:
     that:
-    - inventory_hostname in ['pve', 'arcane']
     - ansible_facts.distribution == 'Debian'
     - ansible_facts.distribution_major_version == '13'
     fail_msg: This workflow supports routine Debian 13 updates, not major release upgrades.

@@ -6,17 +6,17 @@
   tasks:
     - name: Check OpenTofu formatting
       ansible.builtin.command:
-        argv: [tofu, "-chdir={{ repo_root }}/opentofu/proxmox", fmt, -check]
+        argv: [tofu, "-chdir={{ repo_root }}/stages/03-provision/proxmox", fmt, -check]
       changed_when: false
     - name: Validate initialized OpenTofu configuration
       ansible.builtin.command:
-        argv: [tofu, "-chdir={{ repo_root }}/opentofu/proxmox", validate]
+        argv: [tofu, "-chdir={{ repo_root }}/stages/03-provision/proxmox", validate]
       changed_when: false
     - name: Check public playbook syntax
       ansible.builtin.command:
         argv: [ansible-playbook, --syntax-check, "{{ item }}", -e, maintenance_target=guest]
         chdir: "{{ repo_root }}"
-      loop: "{{ query('fileglob', playbook_dir + '/*.yml') | reject('search', '/validate\\.yml$') | list }}"
+      loop: "{{ query('fileglob', playbook_dir + '/*.yml', repo_root + '/stages/02-post-install/*.yml', repo_root + '/jobs/*.yml') | reject('search', '/validate\\.yml$') | list }}"
       changed_when: false
     - name: Run isolated integration tests
       ansible.builtin.command:

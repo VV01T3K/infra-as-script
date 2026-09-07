@@ -10,10 +10,10 @@
 - ansible.builtin.stat:
     path: "{{ item }}"
   loop:
-  - "{{ repo_root }}/installer/profiles"
+  - "{{ repo_root }}/stages/01-install/profiles"
   - "{{ repo_root }}/secrets"
   - "{{ repo_root }}/secrets/proxmox/proxmox_bootstrap"
-  - "{{ repo_root }}/opentofu/proxmox/terraform.tfstate"
+  - "{{ repo_root }}/stages/03-provision/proxmox/terraform.tfstate"
   register: controller_inputs
 - name: Require complete backup inputs
   ansible.builtin.assert:
@@ -35,13 +35,13 @@
   - name: Stream tar directly into GPG without a plaintext archive
     ansible.builtin.shell: |
       set -euo pipefail
-      tar -czf - -C "$REPO_ROOT" --exclude=secrets/proxmox/maintenance.lock.d secrets installer/profiles -C "$TOFU_DIR" terraform.tfstate |
+      tar -czf - -C "$REPO_ROOT" --exclude=secrets/proxmox/maintenance.lock.d secrets stages/01-install/profiles -C "$TOFU_DIR" terraform.tfstate |
         gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 --symmetric --cipher-algo AES256 --output "$ENCRYPTED_PATH" 3<<< "$BACKUP_PASSPHRASE"
     args:
       executable: /bin/bash
     environment:
       REPO_ROOT: "{{ repo_root }}"
-      TOFU_DIR: "{{ repo_root }}/opentofu/proxmox"
+      TOFU_DIR: "{{ repo_root }}/stages/03-provision/proxmox"
       ENCRYPTED_PATH: "{{ encrypted_staging.path }}"
       BACKUP_PASSPHRASE: "{{ backup_passphrase }}"
     no_log: true

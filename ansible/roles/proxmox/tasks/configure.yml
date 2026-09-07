@@ -63,9 +63,14 @@
     - curl
     - git
     - htop
-    - intel-microcode
     - smartmontools
     state: present
+- name: Install microcode for this host
+  ansible.builtin.apt:
+    name: "{{ proxmox_microcode_packages }}"
+    state: present
+  when: proxmox_microcode_packages | length > 0
+  notify: Reboot host
 - name: Disable single-node HA services
   ansible.builtin.systemd_service:
     name: "{{ item }}"
@@ -75,6 +80,7 @@
   - pve-ha-lrm
   - pve-ha-crm
   - corosync
+  when: not (proxmox_cluster_member | bool)
 - name: Prevent laptop sleep and hibernation
   ansible.builtin.systemd_service:
     name: "{{ item }}"
@@ -86,6 +92,7 @@
   - suspend.target
   - hibernate.target
   - hybrid-sleep.target
+  when: proxmox_laptop | bool
 - name: Create the systemd login configuration directory
   ansible.builtin.file:
     path: /etc/systemd/logind.conf.d
@@ -93,6 +100,7 @@
     owner: root
     group: root
     mode: '0755'
+  when: proxmox_laptop | bool
 - name: Ignore the laptop lid
   ansible.builtin.copy:
     dest: /etc/systemd/logind.conf.d/proxmox-server.conf
@@ -106,6 +114,7 @@
       HandleLidSwitchDocked=ignore
       IdleAction=ignore
   notify: Reboot host
+  when: proxmox_laptop | bool
 - name: Enable periodic SSD trimming
   ansible.builtin.systemd_service:
     name: fstrim.timer
@@ -165,7 +174,7 @@
     path: /dev/kvm
   register: kvm_device
 - name: Verify the system SSD health
-  ansible.builtin.command: smartctl -H /dev/sda
+  ansible.builtin.command: smartctl -H {{ proxmox_system_disk }}
   changed_when: false
   register: smart_health
 - name: Read final Proxmox version

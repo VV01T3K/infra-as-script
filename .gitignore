@@ -8,8 +8,8 @@ proxmox_bootstrap
 *.env
 *.key
 *.pem
-installer/**/*.toml
-!installer/**/*.example.toml
+stages/01-install/**/*.toml
+!stages/01-install/**/*.example.toml
 
 # Central local credentials (never commit)
 /secrets/*

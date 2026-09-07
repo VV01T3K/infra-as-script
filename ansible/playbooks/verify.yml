@@ -1,4 +1,3 @@
----
 - name: Load the applied OpenTofu inventory
   hosts: localhost
   connection: local
@@ -27,3 +26,5 @@
     ansible.builtin.import_role:
       name: technitium
       tasks_from: verify
+    when:
+    - manage_dns | default(false) | bool

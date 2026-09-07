@@ -4,7 +4,6 @@
     automation_user: automation@pve
     automation_token: "{{ lookup('file', token_directory + '/token-id', errors='ignore') | default('iac', true)\
       \ | trim }}"
-    management_network: 10.0.0.0/24
     token_directory: "{{ repo_root }}/secrets/proxmox"
     token_file: "{{ token_directory }}/proxmox.env"
   block:
@@ -87,7 +86,7 @@
       dest: "{{ token_file }}"
       mode: '0600'
       content: |
-        export PROXMOX_VE_ENDPOINT='https://10.0.0.50:8006/'
+        export PROXMOX_VE_ENDPOINT='https://{{ hostvars[inventory_hostname].ansible_host }}:8006/'
         export PROXMOX_VE_API_TOKEN_ID='{{ (created_token.stdout | from_json)['full-tokenid'] }}'
         export PROXMOX_VE_API_TOKEN_SECRET='{{ (created_token.stdout | from_json).value }}'
         export PROXMOX_VE_API_TOKEN='{{ (created_token.stdout | from_json)['full-tokenid'] }}={{ (created_token.stdout | from_json).value }}'
@@ -96,7 +95,7 @@
     no_log: true
   - name: Verify the new API token
     ansible.builtin.uri:
-      url: https://10.0.0.50:8006/api2/json/version
+      url: https://{{ hostvars[inventory_hostname].ansible_host }}:8006/api2/json/version
       headers:
         Authorization: "PVEAPIToken={{ (created_token.stdout | from_json)['full-tokenid'] }}={{ (created_token.stdout\
           \ | from_json).value }}"
@@ -106,7 +105,7 @@
     when: created_token is changed
     no_log: true
   - name: Read host firewall rules
-    ansible.builtin.command: pvesh get /nodes/pve/firewall/rules --output-format json
+    ansible.builtin.command: pvesh get /nodes/{{ proxmox_node_name }}/firewall/rules --output-format json
     changed_when: false
     register: host_firewall_rules
   - name: Allow management traffic from the home LAN
@@ -114,7 +113,7 @@
       argv:
       - pvesh
       - create
-      - /nodes/pve/firewall/rules
+      - /nodes/{{ proxmox_node_name }}/firewall/rules
       - --type
       - in
       - --action
@@ -128,7 +127,7 @@
     when: host_firewall_rules.stdout | from_json | selectattr('comment', 'defined') | selectattr('comment', 'equalto',
       'Ansible management LAN') | list | length == 0
   - name: Enable host firewall rules
-    ansible.builtin.command: pvesh set /nodes/pve/firewall/options --enable 1
+    ansible.builtin.command: pvesh set /nodes/{{ proxmox_node_name }}/firewall/options --enable 1
     changed_when: false
   - name: Configure cluster firewall policy while preserving its rules
     ansible.builtin.command: pvesh set /cluster/firewall/options --policy_in DROP --policy_out ACCEPT --policy_forward
@@ -157,13 +156,13 @@
     changed_when: true
   - name: Verify a new SSH connection through the firewall
     ansible.builtin.wait_for:
-      host: 10.0.0.50
+      host: "{{ hostvars[inventory_hostname].ansible_host }}"
       port: 22
       timeout: 30
     delegate_to: localhost
   - name: Verify a new web connection through the firewall
     ansible.builtin.uri:
-      url: https://10.0.0.50:8006/api2/json/version
+      url: https://{{ hostvars[inventory_hostname].ansible_host }}:8006/api2/json/version
       validate_certs: false
       status_code:
       - 200

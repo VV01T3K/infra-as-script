@@ -11,8 +11,9 @@ def copy_repository(destination):
     destination = Path(destination)
     for name in ['ansible', 'inventory']:
         shutil.copytree(REPOSITORY / name, destination / name)
+    shutil.copytree(REPOSITORY / 'stages/02-post-install', destination / 'stages/02-post-install')
     shutil.copyfile(REPOSITORY / 'ansible.cfg', destination / 'ansible.cfg')
-    (destination / 'opentofu/proxmox').mkdir(parents=True)
+    (destination / 'stages/03-provision/proxmox').mkdir(parents=True)
     # All fixtures use local fake hosts; never fall back to the real homelab.
     (destination / 'inventory/hosts.yml').write_text(yaml.safe_dump({'all': {'hosts': {
         'pve': {'ansible_connection': 'local', 'ansible_host': '127.0.0.1'},
