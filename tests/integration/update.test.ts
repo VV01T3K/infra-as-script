@@ -38,7 +38,7 @@ else if (args.includes('status')) process.stdout.write(env.DIRTY || '');
 else if (args.includes('ls-remote')) console.log((env.REMOTE || 'a'.repeat(40)) + '\\trefs/heads/main');
 else console.log('a'.repeat(40));`);
   env = environment(repo, { PATH: join(root, "bin") + ":" + process.env.PATH, REPO: repo, EVENTS: eventFile });
-});
+}, 180_000);
 const events = () => exists(eventFile) ? read(eventFile).trim().split("\n") : [];
 function reset() { remove(eventFile, { force: true }); remove(lock, { recursive: true, force: true }); }
 function manifest() { return read(join(backups, readdirSync(backups)[0], "manifest.txt")); }
@@ -56,37 +56,37 @@ test("every update backs up before mutation and checks health afterward", async 
     expect(read(join(backups, readdirSync(backups).find(n => n.startsWith(`update-${target}-`))!, "manifest.txt"))).toContain("verified=true");
     expect(exists(lock)).toBe(false);
   }
-});
+}, 180_000);
 test("backup failure blocks host mutation and retains the lock", async () => {
   for (const failure of ["maintenance-backup", "backup", "backup-host"]) {
     reset(); expect((await update("host", { FAIL_AT: failure })).code).not.toBe(0);
     expect(events()).not.toContain("update-packages"); expect(exists(lock)).toBe(true);
   }
-});
+}, 180_000);
 test("failed package update is not reported as verified", async () => {
   expect((await update("guest", { FAIL_AT: "update-packages" })).code).not.toBe(0);
   expect(events().at(-1)).toBe("update-packages"); expect(manifest()).not.toContain("verified=true");
-});
+}, 180_000);
 test("unpublished revision blocks Technitium update", async () => {
   expect((await update("technitium", { REMOTE: "b".repeat(40) })).code).not.toBe(0); expect(events()).toEqual([]);
-});
+}, 180_000);
 test("failed final health check is not marked verified", async () => {
   expect((await update("guest", { FAIL_FINAL_HEALTH: "1" })).code).not.toBe(0);
   expect(events()).toContain("update-packages"); expect(events().at(-1)).toBe("verify-services"); expect(manifest()).not.toContain("verified=true");
-});
+}, 180_000);
 test("concurrent maintenance is rejected", async () => {
   mkdirSync(lock, { recursive: true }); expect((await update("pause-gitops")).code).not.toBe(0); expect(events()).toEqual([]);
-});
+}, 180_000);
 test("dirty checkout blocks application update", async () => {
   expect((await update("arcane", { DIRTY: " M arcane.yml" })).code).not.toBe(0); expect(events()).toEqual([]);
-});
+}, 180_000);
 test("deployment uses shared lock and stops on failure", async () => {
   const command = ["ansible-playbook", "-i", join(repo, "inventory/hosts.yml"), join(repo, "ansible/playbooks/deploy.yml")];
   success(await run(command, env)); expect(events()).toEqual(["bootstrap-gitops", "arcane", "gitops", "verify-services"]); expect(exists(lock)).toBe(false);
   reset(); expect((await run(command, { ...env, FAIL_AT: "arcane" })).code).not.toBe(0);
   expect(events()).toEqual(["bootstrap-gitops", "arcane"]); expect(exists(lock)).toBe(true);
   expect((await update("pause-gitops")).code).not.toBe(0); expect(events()).toEqual(["bootstrap-gitops", "arcane"]);
-});
+}, 180_000);
 test("pause neither backs up nor deploys", async () => {
   success(await update("pause-gitops", { DIRTY: " M arcane.yml" })); expect(events()).toEqual(["pause-gitops"]);
-});
+}, 180_000);

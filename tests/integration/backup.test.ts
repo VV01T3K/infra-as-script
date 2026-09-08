@@ -28,4 +28,4 @@ test("encrypted backups restore inputs, reject overwrite and clean up failures",
   expect((await run(command, { ...env, PATH: join(root, "bin") + ":" + env.PATH })).code).not.toBe(0);
   expect(exists(archive)).toBe(false);
   expect(readdirSync(root).filter(n => n.startsWith(".controller-encrypted-"))).toEqual([]);
-});
+}, 180_000);

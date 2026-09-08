@@ -19,7 +19,7 @@ test("installer reuses credentials and rejects invalid regeneration without repl
   const invalid = write(join(root, "invalid.toml"), read(join(root, "stages/01-install/profiles/old-laptop.example.toml")) + "\ninvalid = [\n");
   expect((await run([...command, "--regenerate", "--profile", invalid])).code).not.toBe(0);
   expect(snapshot()).toEqual(current); expect(readdirSync(destination).filter(n => n.startsWith(".prepare-"))).toEqual([]);
-});
+}, 180_000);
 test("post-install preserves ordering and stops before rotation after a host failure", async () => {
   const root = temporary(); copyRepository(root); write(join(root, "secrets/proxmox/proxmox_bootstrap"), "synthetic existing key");
   const operations = [...["ready", "configure", "access", "template"].map(n => ["proxmox", n]), ...["prepare", "manage"].map(n => ["credentials", n])];
@@ -33,7 +33,7 @@ test("post-install preserves ordering and stops before rotation after a host fai
   const lock = join(root, "secrets/proxmox/maintenance.lock.d"); expect(exists(lock)).toBe(false);
   remove(join(root, "events")); expect((await run(command, environment(root, { FAIL_AT: "configure" }))).code).not.toBe(0);
   expect(read(join(root, "events")).trim().split("\n")).toEqual(["ready", "configure"]); expect(exists(lock)).toBe(true);
-});
+}, 180_000);
 test("system updates need no guest state and require an explicit target", async () => {
   const root = temporary(); copyRepository(root);
   const plays = parse(join(repository, "jobs/update-system.yml")); plays[1].gather_facts = false; plays[1].become = false;
@@ -43,4 +43,4 @@ test("system updates need no guest state and require an explicit target", async 
   expect((await run(command, env)).code).not.toBe(0); expect(exists(join(root, "updated"))).toBe(false);
   success(await run([...command, "-e", "system_update_hosts=pve"], env)); expect(exists(join(root, "updated"))).toBe(true);
   expect(exists(join(root, "secrets/proxmox/maintenance.lock.d"))).toBe(false);
-});
+}, 180_000);

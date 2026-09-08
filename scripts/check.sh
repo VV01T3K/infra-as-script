@@ -13,4 +13,4 @@ done
 for file in ansible/playbooks/*.yml stages/02-post-install/*.yml jobs/*.yml; do
   ansible-playbook --syntax-check "$file" -e maintenance_target=guest -e system_update_hosts=pve
 done
-python3 -m unittest discover -s tests/integration -v
+bun test

@@ -102,12 +102,20 @@ Validate without contacting the server:
 bash scripts/check.sh
 ```
 
-Local operations live in `scripts/`: `check.sh` runs syntax checks and the existing
-Python integration test suite; `backup-controller.sh /absolute/backup.gpg` prompts
+Local operations live in `scripts/`: `check.sh` runs syntax checks and the Bun
+integration test suite; `backup-controller.sh /absolute/backup.gpg` prompts
 for a passphrase and encrypts controller credentials and provisioning state to a
 destination outside the checkout. Stop other operations while making a standalone
 backup for a consistent snapshot.
 Ansible backup workflows call the same script while holding their checkout lock.
-Operational helpers use Bash; Python remains a dependency of Ansible and the
-existing tests (Python 3.11+ and PyYAML).
-The installer integration tests also require `proxmox-auto-install-assistant`.
+Operational helpers use Bash; tests and command mocks use TypeScript with Bun.
+Python remains a dependency of Ansible itself.
+
+Run tests with `bun test` (Bun 1.4.2+), or run all checks with
+`bash scripts/check.sh`. There are no npm dependencies to install. Run these
+integration tests on Linux or inside WSL with Ansible and its collections,
+OpenSSH, OpenSSL, GPG, tar, and `proxmox-auto-install-assistant` installed.
+Each test uses a temporary checkout and local inventory; service APIs listen only
+on loopback. Tests exercise real Ansible orchestration without contacting the
+configured laptop, GitHub, or application services. Each test has a three-minute
+timeout to accommodate Ansible subprocesses.

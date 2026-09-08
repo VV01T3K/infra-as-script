@@ -23,4 +23,4 @@ else if (args[0] === 'api') {
   for (const flag of ["CONFLICT", "WRITE_KEY"]) {
     expect((await run(command, { ...env, [flag]: "1" })).code).not.toBe(0); expect(read(key)).toBe(original);
   }
-});
+}, 180_000);
