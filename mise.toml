@@ -34,8 +34,8 @@ usage = '''
 arg "<machine>" help="Machine name from inventory/hosts.yml"
 arg "[ansible_args]..." help="Extra ansible-playbook options" var=#true
 '''
-run = "ansible-playbook stages/1-access/main.yml -e machine=${usage_machine} ${usage_ansible_args:-}"
-raw = true # interactive: YubiKey PIN, if a saved secret has to be read
+run = "scripts/with-fleet-key.sh ansible-playbook stages/1-access/main.yml -e machine=${usage_machine} ${usage_ansible_args:-}"
+raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
 
 [tasks.yubikey-ssh]
 description = "Once per YubiKey: create its SSH key on the key (touch + PIN), public half goes to keys/"
@@ -61,13 +61,17 @@ echo "Connected to ${usage_machine} (${address}) with your YubiKey; Ansible reus
 '''
 raw = true # interactive: YubiKey PIN prompt
 
-[tasks.admin-key]
-description = "Once per laptop: create its fleet SSH key, public half goes to keys/<laptop>.pub"
+[tasks.fleet-key]
+description = "Once: create the fleet SSH key, stored encrypted in secrets/ (public half: keys/fleet.pub)"
 run = '''
-key=~/.ssh/id_ed25519_homelab
-[ -e "$key" ] || ssh-keygen -q -t ed25519 -N '' -C "homelab@$(hostname)" -f "$key"
-cp "$key.pub" "keys/$(hostname).pub"
-echo "Fleet key: $key (public half: keys/$(hostname).pub). Run stage 1 to put it on machines."
+set -e
+[ ! -e secrets/fleet-ssh-key.sops.yaml ] || { echo "secrets/fleet-ssh-key.sops.yaml exists; delete it first to rotate the key." >&2; exit 1; }
+tmp="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/fleet-key.XXXXXX")"; trap 'rm -rf "$tmp"' EXIT
+ssh-keygen -q -t ed25519 -N '' -C fleet@infra-as-script -f "$tmp/key"
+{ echo 'ssh_private_key: |'; sed 's/^/  /' "$tmp/key"; } > "$tmp/plain.yaml"
+sops encrypt --filename-override secrets/fleet-ssh-key.sops.yaml "$tmp/plain.yaml" > secrets/fleet-ssh-key.sops.yaml
+cp "$tmp/key.pub" keys/fleet.pub
+echo "Fleet key ready: keys/fleet.pub (private half only in secrets/fleet-ssh-key.sops.yaml)."
 '''
 
 [tasks.check]

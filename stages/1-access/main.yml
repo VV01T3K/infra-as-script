@@ -115,7 +115,7 @@
       ansible.builtin.command: "true"
       changed_when: false
 
-- name: Remove the installer's ways in to {{ machine }}
+- name: Remove every other way in to {{ machine }}
   hosts: "{{ machine }}"
   gather_facts: false
   tags: [retire]
@@ -129,17 +129,35 @@
       delegate_to: localhost
       register: installer_key
 
-    - name: Remove the dummy installer key (rewritten in place, see above)
+    # Keeps keys whose key data is in keys/, and Proxmox's own root@<node> keys. Removes the rest
+    # (installer key, retired keys). Rewritten in place, see above. Prints what it removed.
+    - name: Allow exactly the keys in keys/ (plus Proxmox's own keys)
       ansible.builtin.shell: |
+        set -o pipefail
         f=/root/.ssh/authorized_keys
-        grep -qF "$OLD" "$f" || exit 0
-        kept="$(grep -vF "$OLD" "$f")"
-        printf '%s\n' "$kept" > "$f" && echo removed
+        kept="" removed=""
+        while IFS= read -r line; do
+          [ -n "$line" ] || continue
+          data="$(printf '%s\n' "$line" | awk '{print $2}')"
+          comment="$(printf '%s\n' "$line" | awk '{print $NF}')"
+          if printf '%s\n' "$ALLOWED" | grep -qxF "$data" || [[ "$comment" == root@* ]]; then
+            kept+="$line"$'\n'
+          else
+            removed+="$comment "
+          fi
+        done < "$f"
+        [ -n "$removed" ] || exit 0
+        printf '%s' "$kept" > "$f" && echo "removed: $removed"
+      args:
+        executable: /bin/bash
       environment:
-        OLD: "{{ lookup('file', installer_dir + '/ssh_key.pub').split()[1] }}"
-      register: removed_key
-      changed_when: "'removed' in removed_key.stdout"
-      when: installer_key.stat.exists
+        # The key data (2nd field) of every keys/*.pub, one per line.
+        ALLOWED: |-
+          {% for f in query('ansible.builtin.fileglob', repo + '/keys/*.pub') %}
+          {{ lookup('ansible.builtin.file', f).split()[1] }}
+          {% endfor %}
+      register: key_list
+      changed_when: "'removed' in key_list.stdout"
 
     - name: Allow only key logins over SSH, no passwords
       ansible.builtin.copy:
