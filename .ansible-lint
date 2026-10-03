@@ -4,3 +4,4 @@ extra_vars:
 # Not Ansible files; .sops.yaml holds very long (post-quantum) recipients.
 exclude_paths:
   - .sops.yaml
+  - secrets/

@@ -16,8 +16,8 @@ _.path = ["{{ config_root }}/.venv/bin"]
 SOPS_AGE_KEY = "AGE-PLUGIN-FIDO2-HMAC-1VE5KGMEJ945X6CTRM2TF76"
 
 [hooks]
-# Python tools, then the git hook that runs `mise run pre-commit` before every commit.
-postinstall = "uv sync --locked && mise generate git-pre-commit --write"
+# Python tools, Ansible collections, then the git hook that runs `mise run pre-commit` before every commit.
+postinstall = "uv sync --locked && ansible-galaxy collection install -r requirements.yml -p .collections && { [ -e .git/hooks/pre-commit ] || mise generate git-pre-commit --write; }"
 
 [tasks.install]
 description = "Stage 0: install Proxmox on a machine (needs the Ventoy stick)"
@@ -27,6 +27,45 @@ arg "[ansible_args]..." help="Extra ansible-playbook options, e.g. --tags verify
 '''
 run = "ansible-playbook stages/0-install/main.yml -e machine=${usage_machine} ${usage_ansible_args:-}"
 raw = true # interactive: it pauses for your input
+
+[tasks.access]
+description = "Stage 1: hand a machine over from the installer key to your YubiKey"
+usage = '''
+arg "<machine>" help="Machine name from inventory/hosts.yml"
+arg "[ansible_args]..." help="Extra ansible-playbook options" var=#true
+'''
+run = [
+  "ansible-playbook stages/1-access/main.yml -e machine=${usage_machine} --tags add ${usage_ansible_args:-}",
+  "mise run connect ${usage_machine}", # proves the YubiKey works before anything is removed
+  "ansible-playbook stages/1-access/main.yml -e machine=${usage_machine} --tags retire ${usage_ansible_args:-}",
+]
+raw = true # interactive: YubiKey PIN prompt
+
+[tasks.yubikey-ssh]
+description = "Once per YubiKey: create its SSH key on the key (touch + PIN), public half goes to keys/"
+usage = 'arg "<name>" help="Short name for the YubiKey, e.g. yubikey-c-nfc"'
+run = """
+ssh-keygen -t ed25519-sk -O resident -O verify-required -O application=ssh:homelab -C "${usage_name}" -f ~/.ssh/id_ed25519_sk_${usage_name}
+cp ~/.ssh/id_ed25519_sk_${usage_name}.pub keys/${usage_name}.pub
+echo "Added keys/${usage_name}.pub. Stage 1 authorizes every key in keys/."
+"""
+raw = true # interactive: PIN and touch
+
+[tasks.connect]
+description = "Open a YubiKey SSH connection to a machine (touch + PIN once); Ansible reuses it for 15 minutes"
+usage = 'arg "<machine>" help="Machine name from inventory/hosts.yml"'
+run = '''
+host="$(ansible-inventory --host "${usage_machine}" --yaml)"
+address="$(printf '%s\n' "$host" | sed -n 's/^address: //p')"
+key="$(printf '%s\n' "$host" | sed -n 's/^ansible_ssh_private_key_file: //p')"
+mkdir -p ~/.ansible/cp
+# Same ControlPath as ansible.cfg, so Ansible finds and reuses this connection.
+ssh -o ControlMaster=auto -o ControlPersist=15m -o 'ControlPath=~/.ansible/cp/%h-%p-%r' \
+  -o IdentitiesOnly=yes -i "${key/#\~/$HOME}" -o "UserKnownHostsFile=$PWD/secrets/known_hosts" \
+  "root@${address}" true
+echo "Connected to ${usage_machine} (${address}); Ansible reuses this for 15 minutes."
+'''
+raw = true # interactive: YubiKey PIN prompt
 
 [tasks.check]
 description = "Lint and validate everything"

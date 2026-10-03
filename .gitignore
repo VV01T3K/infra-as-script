@@ -1,4 +1,7 @@
-# Credentials and generated files never go into Git.
-/secrets/
+# Credentials and generated files never go into Git...
+/secrets/*
+# ...except encrypted files, which need a YubiKey to open.
+!/secrets/*.sops.yaml
 /build/
 /.venv/
+/.collections/

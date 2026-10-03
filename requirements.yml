@@ -1,0 +1,4 @@
+# Ansible collections (add-ons) this repo uses, pinned. `mise install` puts them in .collections/.
+collections:
+  - name: community.sops # read and write sops-encrypted files
+    version: 2.4.0
