@@ -48,16 +48,16 @@ echo "Added keys/${usage_name}.pub. Stage 1 authorizes every key in keys/."
 raw = true # interactive: PIN and touch
 
 [tasks.connect]
-description = "Spare way in: open a YubiKey SSH connection (touch + PIN); Ansible reuses it for 15 minutes"
+description = "Spare way in: open a YubiKey SSH connection (touch + PIN) for the next command, within 2 minutes"
 usage = 'arg "<machine>" help="Machine name from inventory/hosts.yml"'
 run = '''
 address="$(ansible-inventory --host "${usage_machine}" --yaml | sed -n 's/^address: //p')"
 mkdir -p ~/.ansible/cp
 # Same ControlPath as ansible.cfg, so Ansible finds and reuses this connection.
-ssh -o ControlMaster=auto -o ControlPersist=15m -o 'ControlPath=~/.ansible/cp/%h-%p-%r' \
+ssh -o ControlMaster=auto -o ControlPersist=2m -o 'ControlPath=~/.ansible/cp/%h-%p-%r' \
   -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519_sk_yubikey-c-nfc -o "UserKnownHostsFile=$PWD/secrets/known_hosts" \
   "root@${address}" true
-echo "Connected to ${usage_machine} (${address}) with your YubiKey; Ansible reuses this for 15 minutes."
+echo "Connected to ${usage_machine} (${address}) with your YubiKey. Run the next command within 2 minutes; it closes this connection when done."
 '''
 raw = true # interactive: YubiKey PIN prompt
 
