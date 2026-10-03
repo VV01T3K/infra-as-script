@@ -21,8 +21,11 @@ postinstall = "uv sync --locked && mise generate git-pre-commit --write"
 
 [tasks.install]
 description = "Stage 0: install Proxmox on a machine (needs the Ventoy stick)"
-usage = 'arg "<machine>" help="Machine name from inventory/hosts.yml"'
-run = "ansible-playbook stages/0-install/main.yml -e machine=${usage_machine}"
+usage = '''
+arg "<machine>" help="Machine name from inventory/hosts.yml"
+arg "[ansible_args]..." help="Extra ansible-playbook options, e.g. --tags verify" var=#true
+'''
+run = "ansible-playbook stages/0-install/main.yml -e machine=${usage_machine} ${usage_ansible_args:-}"
 raw = true # interactive: it pauses for your input
 
 [tasks.check]

@@ -1,12 +1,15 @@
 # Stage 0: from a bare machine to "I can log in with the installer key".
-# Run: ansible-playbook stages/0-install/main.yml -e machine=torus
+# Run: mise run install torus   (only the final checks: add --tags verify)
 # Needs the Ventoy stick plugged in (or -e ventoy=/path/to/stick).
 
 - name: Build the installer for {{ machine }}
   hosts: "{{ machine }}"
   connection: local # everything in this play happens on your computer
   gather_facts: false
+  tags: [build]
   vars:
+    # Use this computer's Python; otherwise Ansible remembers it as the machine's Python.
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
     repo: "{{ playbook_dir | dirname | dirname }}"
     installer_dir: "{{ repo }}/secrets/{{ inventory_hostname }}/installer"
     build_dir: "{{ repo }}/build"
@@ -147,6 +150,7 @@
 - name: Check the new Proxmox install on {{ machine }}
   hosts: "{{ machine }}"
   gather_facts: false
+  tags: [verify] # run only this part: mise run install <machine> --tags verify
   vars:
     repo: "{{ playbook_dir | dirname | dirname }}"
     ansible_user: root
