@@ -1,9 +1,0 @@
----
-# The router owns DNS records and DHCP reservations.
-technitium_records: []
-dns_external_test_name: example.com
-dns_blocked_test_name: ""
-manage_dns: false
-
-# The shared ansible.cfg anchors paths for every stage and localhost.
-repo_root: "{{ ansible_config_file | dirname }}"

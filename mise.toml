@@ -1,0 +1,36 @@
+# Tools and commands for this repo.
+# New computer: install mise, then run `mise install` in the repo folder.
+# Also needed from the system package manager: podman, git, openssh, openssl.
+# `mise tasks` lists every command.
+
+[tools]
+"github:olastor/age-plugin-fido2-hmac" = "0.5.0"
+gitleaks = "8.30.1"
+opentofu = "1.13.1"
+sops = "3.13.3"
+uv = "0.12.22" # installs the Python tools listed in pyproject.toml
+
+[env]
+_.path = ["{{ config_root }}/.venv/bin"]
+# Not a secret: tells sops to decrypt through the YubiKey plugin (same value for everyone).
+SOPS_AGE_KEY = "AGE-PLUGIN-FIDO2-HMAC-1VE5KGMEJ945X6CTRM2TF76"
+
+[hooks]
+# Python tools, then the git hook that runs `mise run pre-commit` before every commit.
+postinstall = "uv sync --locked && mise generate git-pre-commit --write"
+
+[tasks.install]
+description = "Stage 0: install Proxmox on a machine (needs the Ventoy stick)"
+usage = 'arg "<machine>" help="Machine name from inventory/hosts.yml"'
+run = "ansible-playbook stages/0-install/main.yml -e machine=${usage_machine}"
+
+[tasks.check]
+description = "Lint and validate everything"
+run = "ansible-lint"
+
+[tasks.pre-commit]
+description = "Runs before every commit: block secrets, then check"
+run = [
+  "gitleaks git --staged --redact --no-banner",
+  { task = "check" },
+]

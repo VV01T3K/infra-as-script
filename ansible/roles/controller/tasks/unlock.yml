@@ -1,4 +1,0 @@
----
-- ansible.builtin.file:
-    path: "{{ repo_root }}/secrets/proxmox/maintenance.lock.d"
-    state: absent

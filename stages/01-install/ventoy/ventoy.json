@@ -1,7 +1,0 @@
-{
-  "control": [
-    { "VTOY_MENU_TIMEOUT": "10" },
-    { "VTOY_DEFAULT_IMAGE": "/ISO/proxmox-ve_9.2-1-auto.iso" },
-    { "VTOY_SECONDARY_BOOT_MENU": "0" }
-  ]
-}

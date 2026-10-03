@@ -1,16 +1,4 @@
-*.iso
-__pycache__/
-proxmox_bootstrap
-.tmp-*
-
-# Local secrets and machine-specific installer profiles
-.env
-*.env
-*.key
-*.pem
-stages/01-install/**/*.toml
-!stages/01-install/**/*.example.toml
-
-# Central local credentials (never commit)
-/secrets/*
-!/secrets/README.md
+# Credentials and generated files never go into Git.
+/secrets/
+/build/
+/.venv/

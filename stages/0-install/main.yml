@@ -1,0 +1,176 @@
+# Stage 0: from a bare machine to "I can log in with the installer key".
+# Run: ansible-playbook stages/0-install/main.yml -e machine=torus
+# Needs the Ventoy stick plugged in (or -e ventoy=/path/to/stick).
+
+- name: Build the installer for {{ machine }}
+  hosts: "{{ machine }}"
+  connection: local # everything in this play happens on your computer
+  gather_facts: false
+  vars:
+    repo: "{{ playbook_dir | dirname | dirname }}"
+    installer_dir: "{{ repo }}/secrets/{{ inventory_hostname }}/installer"
+    build_dir: "{{ repo }}/build"
+    ventoy: "{{ ventoy_path | default('/run/media/' + lookup('env', 'USER') + '/Ventoy') }}"
+    iso_name: "{{ inventory_hostname }}.iso"
+    assistant: localhost/proxmox-auto-install-assistant
+  tasks:
+    - name: Find the Ventoy stick
+      ansible.builtin.stat:
+        path: "{{ ventoy }}/ventoy"
+      register: ventoy_dir
+      failed_when: not ventoy_dir.stat.exists
+
+    - name: Create the folders for secrets and build output
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop: ["{{ installer_dir }}", "{{ build_dir }}"]
+
+    # --- 1. Installer credentials: created once, reused on every later run ---
+
+    - name: Create the installer SSH key (once)
+      ansible.builtin.command:
+        cmd: ssh-keygen -q -t ed25519 -N '' -C "installer@{{ inventory_hostname }}" -f ssh_key
+        chdir: "{{ installer_dir }}"
+        creates: ssh_key
+
+    - name: Create the installer root password and its hash (once)
+      ansible.builtin.shell:
+        cmd: umask 077 && openssl rand -base64 24 > root-password && openssl passwd -6 -stdin < root-password > root-password.sha512
+        chdir: "{{ installer_dir }}"
+        creates: root-password
+
+    # --- 2. Answer file ---
+
+    - name: Fill in the answer file
+      ansible.builtin.template:
+        src: answer.toml.j2
+        dest: "{{ installer_dir }}/answer.toml"
+        mode: "0600"
+      vars:
+        installer_public_key: "{{ lookup('file', installer_dir + '/ssh_key.pub') }}"
+        installer_root_password_hash: "{{ lookup('file', installer_dir + '/root-password.sha512') }}"
+      register: answer
+
+    # --- 3. Base ISO from the stick ---
+
+    - name: Verify the Proxmox base ISO on the stick against the official checksum
+      ansible.builtin.stat:
+        path: "{{ ventoy }}/ISO/{{ proxmox_iso.file }}"
+        checksum_algorithm: sha256
+      register: base_iso
+      failed_when: not base_iso.stat.exists or base_iso.stat.checksum != proxmox_iso.sha256
+
+    # --- 4. Build the installer ISO with Proxmox's tool (in a container) ---
+
+    - name: Build the container with Proxmox's answer-file tool
+      ansible.builtin.command: podman build -q -t {{ assistant }} {{ playbook_dir }}
+      changed_when: false
+
+    - name: Check the answer file
+      ansible.builtin.command: >-
+        podman run --rm -v {{ installer_dir }}:/work:ro {{ assistant }}
+        proxmox-auto-install-assistant validate-answer /work/answer.toml
+      register: validation
+      changed_when: false
+      # Some versions print errors but still exit successfully.
+      failed_when: validation.rc != 0 or 'Error' in (validation.stdout + validation.stderr)
+
+    - name: Check whether the installer ISO already exists
+      ansible.builtin.stat:
+        path: "{{ build_dir }}/{{ iso_name }}"
+        get_checksum: false
+      register: built_iso
+
+    - name: Bake the answer file into the installer ISO
+      ansible.builtin.command: >-
+        podman run --rm
+        -v {{ ventoy }}/ISO/{{ proxmox_iso.file }}:/base.iso:ro
+        -v {{ installer_dir }}:/work:ro
+        -v {{ build_dir }}:/out
+        {{ assistant }}
+        proxmox-auto-install-assistant prepare-iso /base.iso
+        --fetch-from iso --answer-file /work/answer.toml --output /out/{{ iso_name }}
+      when: answer is changed or not built_iso.stat.exists
+      changed_when: true
+
+    # --- 5. Put it on the stick and make it start automatically ---
+
+    - name: Copy the installer ISO to the stick
+      ansible.builtin.copy: # noqa: risky-file-permissions (the stick is exFAT: no permissions)
+        src: "{{ build_dir }}/{{ iso_name }}"
+        dest: "{{ ventoy }}/ISO/{{ iso_name }}"
+
+    - name: Make Ventoy start this ISO automatically (other settings are kept)
+      ansible.builtin.copy: # noqa: risky-file-permissions (the stick is exFAT: no permissions)
+        dest: "{{ ventoy }}/ventoy/ventoy.json"
+        content: "{{ config | combine({'control': control}) | to_nice_json(indent=2) }}\n"
+      vars:
+        config: "{{ lookup('file', ventoy + '/ventoy/ventoy.json', errors='ignore') | default('{}', true) | from_json }}"
+        control: "{{ config.control | default([]) | rejectattr('VTOY_DEFAULT_IMAGE', 'defined') | list + [{'VTOY_DEFAULT_IMAGE': '/ISO/' + iso_name}] }}"
+
+    - name: Flush writes to the stick
+      ansible.builtin.command: sync
+      changed_when: false
+
+    # --- 6. Your turn ---
+
+    - name: Your turn
+      ansible.builtin.pause:
+        prompt: |
+
+          The stick is ready. Now:
+            1. Eject the stick, plug it into {{ inventory_hostname }}.
+            2. On {{ inventory_hostname }}'s current system, boot from USB once:
+                 sudo efibootmgr                       (find the USB entry number)
+                 sudo efibootmgr --bootnext <number> && sudo reboot
+            3. It installs Proxmox by itself (about 10-15 minutes) and reboots into it.
+               If the USB boot fails, the old system just starts again.
+
+          Press Enter, then I'll wait for {{ address }} to come up.
+
+    - name: Forget the host key from a previous install at {{ address }}
+      ansible.builtin.command: ssh-keygen -R {{ address }} -f {{ repo }}/secrets/known_hosts
+      failed_when: false
+      changed_when: false
+
+    - name: Wait for SSH to answer at {{ address }}
+      ansible.builtin.wait_for:
+        host: "{{ address }}"
+        port: 22
+        timeout: 3600
+
+- name: Check the new Proxmox install on {{ machine }}
+  hosts: "{{ machine }}"
+  gather_facts: false
+  vars:
+    repo: "{{ playbook_dir | dirname | dirname }}"
+    ansible_user: root
+    ansible_ssh_private_key_file: "{{ repo }}/secrets/{{ inventory_hostname }}/installer/ssh_key"
+    ansible_ssh_common_args: >-
+      -o IdentitiesOnly=yes
+      -o UserKnownHostsFile={{ repo }}/secrets/known_hosts
+      -o StrictHostKeyChecking=accept-new
+  tasks:
+    - name: Log in with the installer key and read the Proxmox version
+      ansible.builtin.command: pveversion
+      register: pve
+      changed_when: false
+
+    - name: Check that the system is installed on disk {{ install.disk_serial }}
+      ansible.builtin.shell: lsblk -s -n -o SERIAL "$(findmnt -n -o SOURCE /)"
+      register: root_disk
+      changed_when: false
+      failed_when: install.disk_serial not in root_disk.stdout
+
+    - name: Record that stage 0 is done
+      ansible.builtin.copy:
+        dest: "{{ repo }}/secrets/{{ inventory_hostname }}/stage-0.done"
+        content: "{{ pve.stdout }}\n"
+        mode: "0600"
+      delegate_to: localhost
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} runs {{ pve.stdout }} at {{ address }}. Next: stage 1 (access)."

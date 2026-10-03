@@ -1,0 +1,28 @@
+# Proxmox automated installer answer for {{ inventory_hostname }}.
+# Stage 0 fills this in; the result is secrets/{{ inventory_hostname }}/installer/answer.toml.
+# Reference: https://pve.proxmox.com/wiki/Automated_Installation
+{% set net = networks[network] %}
+
+[global]
+keyboard = "{{ locale.keyboard }}"
+country = "{{ locale.country }}"
+timezone = "{{ locale.timezone }}"
+fqdn = "{{ inventory_hostname }}.{{ domain }}"
+mailto = "root@localhost"
+root-password-hashed = "{{ installer_root_password_hash }}"
+root-ssh-keys = ["{{ installer_public_key }}"]
+# Safe because the USB boot is one-time (efibootmgr --bootnext).
+reboot-mode = "reboot"
+
+[network]
+source = "from-answer"
+cidr = "{{ address }}/{{ net.subnet.split('/')[1] }}"
+gateway = "{{ net.gateway }}"
+dns = "{{ net.dns }}"
+# Use only this machine's network card.
+filter.ID_NET_NAME_MAC = "enx{{ mac | replace(':', '') }}"
+
+[disk-setup]
+filesystem = "{{ install.filesystem }}"
+# Install only onto this exact disk. On any other machine nothing matches and the installer stops.
+filter.ID_SERIAL_SHORT = "{{ install.disk_serial }}"
