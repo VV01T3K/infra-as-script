@@ -43,23 +43,9 @@ usage = 'arg "<name>" help="Short name for the YubiKey, e.g. yubikey-c-nfc"'
 run = """
 ssh-keygen -t ed25519-sk -O resident -O verify-required -O application=ssh:homelab -C "${usage_name}" -f ~/.ssh/id_ed25519_sk_${usage_name}
 cp ~/.ssh/id_ed25519_sk_${usage_name}.pub keys/${usage_name}.pub
-echo "Added keys/${usage_name}.pub. Stage 1 authorizes every key in keys/."
+echo "Added keys/${usage_name}.pub. Stage 1 puts every key in keys/ on the machines."
 """
 raw = true # interactive: PIN and touch
-
-[tasks.connect]
-description = "Spare way in: open a YubiKey SSH connection (touch + PIN) for the next command, within 2 minutes"
-usage = 'arg "<machine>" help="Machine name from inventory/hosts.yml"'
-run = '''
-address="$(ansible-inventory --host "${usage_machine}" --yaml | sed -n 's/^address: //p')"
-mkdir -p ~/.ansible/cp
-# Same ControlPath as ansible.cfg, so Ansible finds and reuses this connection.
-ssh -o ControlMaster=auto -o ControlPersist=2m -o 'ControlPath=~/.ansible/cp/%h-%p-%r' \
-  -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519_sk_yubikey-c-nfc -o "UserKnownHostsFile=$PWD/secrets/known_hosts" \
-  "root@${address}" true
-echo "Connected to ${usage_machine} (${address}) with your YubiKey. Run the next command within 2 minutes; it closes this connection when done."
-'''
-raw = true # interactive: YubiKey PIN prompt
 
 [tasks.fleet-key]
 description = "Once: create the fleet SSH key, stored encrypted in secrets/ (public half: keys/fleet.pub)"

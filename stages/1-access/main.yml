@@ -1,7 +1,6 @@
 # Stage 1: from "the installer key works" to "only the keys in keys/ work".
 # Run: mise run access torus
 # Needs: stage 0 done for the machine. Re-run it after adding or replacing a key in keys/.
-# If the machine doesn't know your current laptop key yet, first: mise run connect <machine> (YubiKey).
 # Nothing old is removed until a login with the admin key has been proven to work.
 
 - name: Add the keys from keys/ and a new root password to {{ machine }}
@@ -14,8 +13,7 @@
     secrets_file: "{{ repo }}/secrets/{{ inventory_hostname }}.sops.yaml"
     password_set_marker: "{{ repo }}/secrets/{{ inventory_hostname }}/root-password.set"
     admin_key_files: "{{ query('ansible.builtin.fileglob', repo + '/keys/*.pub') }}"
-    # First run: the dummy installer key from stage 0. Later runs: the admin key
-    # (or an open `mise run connect` YubiKey connection, which Ansible reuses).
+    # First run: the dummy installer key from stage 0. Later runs: the admin key.
     stage1_marker: "{{ repo }}/secrets/{{ inventory_hostname }}/stage-1.done"
     ansible_ssh_private_key_file: "{{ admin_key if stage1_marker is exists else installer_dir ~ '/ssh_key' }}"
   tasks:
