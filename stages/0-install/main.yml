@@ -93,7 +93,10 @@
         proxmox-auto-install-assistant prepare-iso /base.iso
         --fetch-from iso --answer-file /work/answer.toml --output /out/{{ iso_name }}
       when: answer is changed or not built_iso.stat.exists
+      register: bake
       changed_when: true
+      # Like the answer check: errors can come with a successful exit code.
+      failed_when: bake.rc != 0 or 'Error' in (bake.stdout + bake.stderr)
 
     # --- 5. Put it on the stick and make it start automatically ---
 
