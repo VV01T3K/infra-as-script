@@ -1,9 +1,10 @@
-# Stage 1: from "the installer key works" to "only your YubiKey works".
+# Stage 1: from "the installer key works" to "only the keys in keys/ work".
 # Run: mise run access torus
-# Needs: stage 0 done for the machine, your YubiKey plugged into this computer.
-# Nothing old is removed until the YubiKey login has been proven to work (mise run connect).
+# Needs: stage 0 done for the machine. Re-run it after adding or replacing a key in keys/.
+# If the machine doesn't know your current laptop key yet, first: mise run connect <machine> (YubiKey).
+# Nothing old is removed until a login with the admin key has been proven to work.
 
-- name: Add your YubiKey and a new root password to {{ machine }}
+- name: Add the keys from keys/ and a new root password to {{ machine }}
   hosts: "{{ machine }}"
   gather_facts: false
   tags: [add]
@@ -13,8 +14,10 @@
     secrets_file: "{{ repo }}/secrets/{{ inventory_hostname }}.sops.yaml"
     password_set_marker: "{{ repo }}/secrets/{{ inventory_hostname }}/root-password.set"
     admin_key_files: "{{ query('ansible.builtin.fileglob', repo + '/keys/*.pub') }}"
-    # This play still logs in with the dummy installer key from stage 0.
-    ansible_ssh_private_key_file: "{{ installer_dir }}/ssh_key"
+    # First run: the dummy installer key from stage 0. Later runs: the admin key
+    # (or an open `mise run connect` YubiKey connection, which Ansible reuses).
+    stage1_marker: "{{ repo }}/secrets/{{ inventory_hostname }}/stage-1.done"
+    ansible_ssh_private_key_file: "{{ admin_key if stage1_marker is exists else installer_dir ~ '/ssh_key' }}"
   tasks:
     - name: Require stage 0 for this machine
       ansible.builtin.stat:
@@ -23,13 +26,13 @@
       register: stage0
       failed_when: not stage0.stat.exists
 
-    - name: Require at least one YubiKey key in keys/
+    - name: Require at least one key in keys/
       ansible.builtin.assert:
         that: admin_key_files | length > 0
-        fail_msg: "No keys in keys/. Create one first: mise run yubikey-ssh yubikey-c-nfc"
+        fail_msg: "No keys in keys/. Create one first: mise run admin-key"
 
     # On Proxmox, root's key file links into /etc/pve, which only allows in-place edits.
-    - name: Allow your YubiKey keys to log in as root
+    - name: Allow the keys in keys/ to log in as root
       ansible.builtin.shell: |
         f=/root/.ssh/authorized_keys
         grep -qxF "$KEY" "$f" && exit 0
@@ -100,16 +103,15 @@
         mode: "0600"
       delegate_to: localhost
 
-    - name: Close the installer-key connection, so the next step really uses the YubiKey
+    - name: Close this connection, so the next step really logs in with the admin key
       ansible.builtin.meta: reset_connection
 
-# Between the plays, `mise run connect` opened a YubiKey connection (touch + PIN in your terminal).
-- name: Use the YubiKey connection to {{ machine }}
+- name: Prove that the admin key can log in to {{ machine }}
   hosts: "{{ machine }}"
   gather_facts: false
   tags: [retire]
   tasks:
-    - name: Run a command over the YubiKey connection
+    - name: Log in with the admin key ({{ admin_key }})
       ansible.builtin.command: "true"
       changed_when: false
 
@@ -121,6 +123,12 @@
     repo: "{{ playbook_dir | dirname | dirname }}"
     installer_dir: "{{ repo }}/secrets/{{ inventory_hostname }}/installer"
   tasks:
+    - name: Check for the installer key files
+      ansible.builtin.stat:
+        path: "{{ installer_dir }}/ssh_key.pub"
+      delegate_to: localhost
+      register: installer_key
+
     - name: Remove the dummy installer key (rewritten in place, see above)
       ansible.builtin.shell: |
         f=/root/.ssh/authorized_keys
@@ -131,6 +139,7 @@
         OLD: "{{ lookup('file', installer_dir + '/ssh_key.pub').split()[1] }}"
       register: removed_key
       changed_when: "'removed' in removed_key.stdout"
+      when: installer_key.stat.exists
 
     - name: Allow only key logins over SSH, no passwords
       ansible.builtin.copy:
@@ -169,11 +178,13 @@
       register: installer_login
       changed_when: false
       failed_when: installer_login.rc == 0
+      when: installer_key.stat.exists
 
     - name: Check that the server no longer offers password logins
       ansible.builtin.assert:
         that: "'password' not in installer_login.stderr"
         fail_msg: "The server still offers password login: {{ installer_login.stderr }}"
+      when: installer_key.stat.exists
 
     - name: Record that stage 1 is done
       ansible.builtin.copy:
@@ -185,7 +196,7 @@
     - name: Done
       ansible.builtin.debug:
         msg: >-
-          {{ inventory_hostname }} now accepts only your YubiKey over SSH. Its root password is saved in
+          {{ inventory_hostname }} now accepts only the keys in keys/ over SSH. Its root password is saved in
           secrets/{{ inventory_hostname }}.sops.yaml (sops decrypt shows it). Next: stage 2 (host).
 
   handlers:

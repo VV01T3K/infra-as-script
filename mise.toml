@@ -29,17 +29,13 @@ run = "ansible-playbook stages/0-install/main.yml -e machine=${usage_machine} ${
 raw = true # interactive: it pauses for your input
 
 [tasks.access]
-description = "Stage 1: hand a machine over from the installer key to your YubiKey"
+description = "Stage 1: hand a machine over from the installer key to the keys in keys/"
 usage = '''
 arg "<machine>" help="Machine name from inventory/hosts.yml"
 arg "[ansible_args]..." help="Extra ansible-playbook options" var=#true
 '''
-run = [
-  "ansible-playbook stages/1-access/main.yml -e machine=${usage_machine} --tags add ${usage_ansible_args:-}",
-  "mise run connect ${usage_machine}", # proves the YubiKey works before anything is removed
-  "ansible-playbook stages/1-access/main.yml -e machine=${usage_machine} --tags retire ${usage_ansible_args:-}",
-]
-raw = true # interactive: YubiKey PIN prompt
+run = "ansible-playbook stages/1-access/main.yml -e machine=${usage_machine} ${usage_ansible_args:-}"
+raw = true # interactive: YubiKey PIN, if a saved secret has to be read
 
 [tasks.yubikey-ssh]
 description = "Once per YubiKey: create its SSH key on the key (touch + PIN), public half goes to keys/"
@@ -52,20 +48,27 @@ echo "Added keys/${usage_name}.pub. Stage 1 authorizes every key in keys/."
 raw = true # interactive: PIN and touch
 
 [tasks.connect]
-description = "Open a YubiKey SSH connection to a machine (touch + PIN once); Ansible reuses it for 15 minutes"
+description = "Spare way in: open a YubiKey SSH connection (touch + PIN); Ansible reuses it for 15 minutes"
 usage = 'arg "<machine>" help="Machine name from inventory/hosts.yml"'
 run = '''
-host="$(ansible-inventory --host "${usage_machine}" --yaml)"
-address="$(printf '%s\n' "$host" | sed -n 's/^address: //p')"
-key="$(printf '%s\n' "$host" | sed -n 's/^ansible_ssh_private_key_file: //p')"
+address="$(ansible-inventory --host "${usage_machine}" --yaml | sed -n 's/^address: //p')"
 mkdir -p ~/.ansible/cp
 # Same ControlPath as ansible.cfg, so Ansible finds and reuses this connection.
 ssh -o ControlMaster=auto -o ControlPersist=15m -o 'ControlPath=~/.ansible/cp/%h-%p-%r' \
-  -o IdentitiesOnly=yes -i "${key/#\~/$HOME}" -o "UserKnownHostsFile=$PWD/secrets/known_hosts" \
+  -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519_sk_yubikey-c-nfc -o "UserKnownHostsFile=$PWD/secrets/known_hosts" \
   "root@${address}" true
-echo "Connected to ${usage_machine} (${address}); Ansible reuses this for 15 minutes."
+echo "Connected to ${usage_machine} (${address}) with your YubiKey; Ansible reuses this for 15 minutes."
 '''
 raw = true # interactive: YubiKey PIN prompt
+
+[tasks.admin-key]
+description = "Once per laptop: create its fleet SSH key, public half goes to keys/<laptop>.pub"
+run = '''
+key=~/.ssh/id_ed25519_homelab
+[ -e "$key" ] || ssh-keygen -q -t ed25519 -N '' -C "homelab@$(hostname)" -f "$key"
+cp "$key.pub" "keys/$(hostname).pub"
+echo "Fleet key: $key (public half: keys/$(hostname).pub). Run stage 1 to put it on machines."
+'''
 
 [tasks.check]
 description = "Lint and validate everything"
