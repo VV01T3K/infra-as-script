@@ -37,6 +37,15 @@ arg "[ansible_args]..." help="Extra ansible-playbook options" var=#true
 run = "scripts/with-fleet-key.sh ansible-playbook stages/1-access/main.yml -e machine=${usage_machine} ${usage_ansible_args:-}"
 raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
 
+[tasks.host]
+description = "Stage 2: set up Proxmox on a machine (packages, network, firewall, backup disk, API token)"
+usage = '''
+arg "<machine>" help="Machine name from inventory/hosts.yml"
+arg "[ansible_args]..." help="Extra ansible-playbook options, e.g. --tags firewall" var=#true
+'''
+run = "scripts/with-fleet-key.sh ansible-playbook stages/2-host/main.yml -e machine=${usage_machine} ${usage_ansible_args:-}"
+raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
+
 [tasks.yubikey-ssh]
 description = "Once per YubiKey: create its SSH key on the key (touch + PIN), public half goes to keys/"
 usage = 'arg "<name>" help="Short name for the YubiKey, e.g. yubikey-c-nfc"'

@@ -1,0 +1,20 @@
+# Managed by stage 2 (infra-as-script): change inventory/hosts.yml and re-run, not this file.
+{% set net = networks[network] %}
+
+auto lo
+iface lo inet loopback
+
+iface {{ nic }} inet manual
+
+# VLAN-aware: guests can join any network by VLAN tag (e.g. infra = tag {{ networks.infra.vlan }}).
+auto vmbr0
+iface vmbr0 inet static
+	address {{ address }}/{{ net.subnet.split('/')[1] }}
+	gateway {{ net.gateway }}
+	bridge-ports {{ nic }}
+	bridge-stp off
+	bridge-fd 0
+	bridge-vlan-aware yes
+	bridge-vids 2-4094
+
+source /etc/network/interfaces.d/*

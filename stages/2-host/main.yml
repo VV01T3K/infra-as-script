@@ -1,0 +1,395 @@
+# Stage 2: from "a fresh Proxmox I can log in to" to "a Proxmox host ready for guests".
+# Run: mise run host torus   (one part only: add e.g. --tags firewall)
+# Needs: stage 1 done for the machine. Safe to re-run: every step checks first and changes only what differs.
+# Parts (tags): packages, network, firewall, backup-disk, api-token.
+
+- name: Set up a Proxmox host on {{ machine }}
+  hosts: "{{ machine }}"
+  vars:
+    repo: "{{ playbook_dir | dirname | dirname }}"
+    api_secrets_file: "{{ repo }}/secrets/{{ inventory_hostname }}.api.sops.yaml"
+    # Undo timers for the network and firewall changes, see those parts.
+    rollback_seconds: 120
+  tasks:
+    - name: Require stage 1 for this machine
+      ansible.builtin.stat:
+        path: "{{ repo }}/secrets/{{ inventory_hostname }}/stage-1.done"
+      delegate_to: localhost
+      register: stage1
+      failed_when: not stage1.stat.exists
+      tags: [always]
+
+    # --- 1. Packages: free update source, all updates, a few tools, no subscription popup ---
+
+    - name: Packages
+      tags: [packages]
+      block:
+        - name: Turn off the paid (enterprise) package sources
+          ansible.builtin.lineinfile:
+            path: /etc/apt/sources.list.d/{{ item }}.sources
+            regexp: "^Enabled:"
+            line: "Enabled: false"
+          loop: [pve-enterprise, ceph]
+
+        - name: Add the free (no-subscription) Proxmox package source
+          ansible.builtin.copy:
+            dest: /etc/apt/sources.list.d/proxmox.sources
+            content: |
+              # Managed by stage 2 (infra-as-script).
+              Types: deb
+              URIs: http://download.proxmox.com/debian/pve
+              Suites: {{ ansible_facts.distribution_release }}
+              Components: pve-no-subscription
+              Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+            mode: "0644"
+
+        # Installed before the updates, so the updates already run it.
+        - name: Install the script that removes the subscription popup
+          ansible.builtin.copy:
+            src: remove-subscription-popup.sh
+            dest: /usr/local/sbin/remove-subscription-popup
+            mode: "0755"
+
+        - name: Run it after every package change, so updates can't bring the popup back
+          ansible.builtin.copy:
+            dest: /etc/apt/apt.conf.d/90-remove-subscription-popup
+            content: |
+              // Managed by stage 2 (infra-as-script).
+              DPkg::Post-Invoke { "/usr/local/sbin/remove-subscription-popup"; };
+            mode: "0644"
+
+        - name: Remove the popup now
+          ansible.builtin.command: /usr/local/sbin/remove-subscription-popup
+          register: popup
+          changed_when: "'removed' in popup.stdout"
+
+        - name: Install all updates (Proxmox's recommended way, a full upgrade)
+          ansible.builtin.apt:
+            update_cache: true
+            upgrade: dist
+
+        - name: Install the CPU's microcode (security and stability fixes, loaded at boot)
+          ansible.builtin.apt:
+            name: "{{ 'intel-microcode' if 'GenuineIntel' in ansible_facts.processor else 'amd64-microcode' }}"
+          register: microcode
+
+        - name: Install tools (disk health, process viewer, HTTP client)
+          ansible.builtin.apt:
+            name: [smartmontools, htop, curl]
+
+        - name: Check whether a newer kernel was installed than the one running
+          ansible.builtin.shell: |
+            set -o pipefail
+            newest="$(ls -v /boot/vmlinuz-* | tail -n 1)"
+            [ "$newest" = "/boot/vmlinuz-$(uname -r)" ] || echo "${newest#/boot/vmlinuz-}"
+          args:
+            executable: /bin/bash
+          register: newer_kernel
+          changed_when: false
+
+        - name: Restart to use the new kernel and microcode (takes a minute or two)
+          ansible.builtin.reboot:
+            msg: Restart by stage 2 (infra-as-script) for a new kernel or microcode
+          when: newer_kernel.stdout | length > 0 or microcode is changed
+
+        - name: Remove the boot entries of systems that ran here before ({{ old_boot_entries | default([]) | join(', ') }})
+          ansible.builtin.shell: |
+            set -o pipefail
+            for n in $(efibootmgr | grep -E "^Boot[0-9A-F]{4}\*? ($LABELS)(\s|$)" | cut -c5-8 || true); do
+              efibootmgr -q -b "$n" -B && echo "removed Boot$n"
+            done
+          args:
+            executable: /bin/bash
+          environment:
+            LABELS: "{{ old_boot_entries | default([]) | join('|') }}"
+          register: boot_entries
+          changed_when: "'removed' in boot_entries.stdout"
+          when: old_boot_entries | default([]) | length > 0
+
+    # --- 2. Network: settings from inventory/hosts.yml, bridge ready for VLANs ---
+    # If the new settings cut the machine off, it puts the old ones back by itself after rollback_seconds.
+
+    - name: Network
+      tags: [network]
+      block:
+        - name: Find the network port with MAC {{ mac }}
+          ansible.builtin.set_fact:
+            nic: >-
+              {{ ansible_facts.interfaces | map('replace', '-', '_') | map('extract', ansible_facts)
+                 | selectattr('type', 'defined') | selectattr('type', 'eq', 'ether')
+                 | selectattr('macaddress', 'eq', mac) | map(attribute='device') | first }}
+
+        - name: Write the network settings
+          ansible.builtin.template:
+            src: interfaces.j2
+            dest: /etc/network/interfaces
+            mode: "0644"
+            backup: true
+          register: interfaces
+
+        # Steps with "backup_file is defined" run only if the settings changed (then a copy of the old ones exists).
+        - name: Start the undo timer (puts the old settings back unless stopped in time)
+          ansible.builtin.command: >-
+            systemd-run --unit=stage-2-network-undo --on-active={{ rollback_seconds }}
+            /bin/sh -c 'cp {{ interfaces.backup_file }} /etc/network/interfaces && ifreload -a'
+          changed_when: true
+          when: interfaces.backup_file is defined
+
+        - name: Apply the new network settings
+          ansible.builtin.command: ifreload -a
+          changed_when: true
+          when: interfaces.backup_file is defined
+
+        - name: Close this connection, so the next step logs in over the new settings
+          ansible.builtin.meta: reset_connection
+
+        - name: Log in again and check that the bridge handles VLANs
+          ansible.builtin.command: cat /sys/class/net/vmbr0/bridge/vlan_filtering
+          register: vlan_filtering
+          changed_when: false
+          failed_when: vlan_filtering.stdout != '1'
+
+        - name: Stop the undo timer, the new settings work
+          ansible.builtin.systemd_service:
+            name: stage-2-network-undo.timer
+            state: stopped
+          when: interfaces.backup_file is defined
+
+        - name: Delete the copy of the old settings
+          ansible.builtin.file:
+            path: "{{ interfaces.backup_file }}"
+            state: absent
+          when: interfaces.backup_file is defined
+
+    # --- 3. Firewall: only admin_from networks may reach SSH and the web UI ---
+    # Proxmox lets the IPSet "management" in to SSH (22), the web UI (8006) and consoles; the rest is dropped.
+    # The IPSet holds exactly the admin_from networks: missing ones are added, others removed.
+    # If a change locks us out, the firewall turns itself off after rollback_seconds.
+
+    - name: Firewall
+      tags: [firewall]
+      vars:
+        admin_subnets: "{{ admin_from | map('extract', networks) | map(attribute='subnet') | list }}"
+      block:
+        - name: Read the firewall settings
+          ansible.builtin.command: pvesh get /cluster/firewall/options --output-format json
+          register: firewall_options
+          changed_when: false
+
+        - name: Read the firewall's address lists (IPSets)
+          ansible.builtin.command: pvesh get /cluster/firewall/ipset --output-format json
+          register: ipsets
+          changed_when: false
+
+        - name: Read the networks in the IPSet "management"
+          ansible.builtin.command: pvesh get /cluster/firewall/ipset/management --output-format json
+          register: management
+          changed_when: false
+          when: "'management' in ipsets.stdout | from_json | map(attribute='name')"
+
+        - name: Compare with admin_from ({{ admin_from | join(', ') }})
+          ansible.builtin.set_fact:
+            firewall_on: "{{ (firewall_options.stdout | from_json).enable | default(0) | bool }}"
+            management_exists: "{{ management is not skipped }}"
+            current_subnets: "{{ management.stdout | default('[]') | from_json | map(attribute='cidr') | list }}"
+
+        - name: Note whether anything changes
+          ansible.builtin.set_fact:
+            firewall_change: "{{ not firewall_on or not management_exists or current_subnets | sort != admin_subnets | sort }}"
+
+        - name: Start the undo timer (turns the firewall off unless stopped in time)
+          ansible.builtin.command: >-
+            systemd-run --unit=stage-2-firewall-undo --on-active={{ rollback_seconds }}
+            pvesh set /cluster/firewall/options --enable 0
+          changed_when: true
+          when: firewall_change
+
+        - name: Create the IPSet "management"
+          ansible.builtin.command: pvesh create /cluster/firewall/ipset --name management --comment "admin_from in inventory/hosts.yml"
+          changed_when: true
+          when: not management_exists
+
+        - name: Add the networks that are in admin_from
+          ansible.builtin.command: pvesh create /cluster/firewall/ipset/management --cidr {{ item }}
+          changed_when: true
+          loop: "{{ admin_subnets | difference(current_subnets) }}"
+
+        # Everything after the IPSet name is the address, slash included.
+        - name: Remove the networks that are not in admin_from
+          ansible.builtin.command: pvesh delete /cluster/firewall/ipset/management/{{ item }}
+          changed_when: true
+          loop: "{{ current_subnets | difference(admin_subnets) }}"
+
+        - name: Turn the firewall on, dropping everything incoming that isn't allowed
+          ansible.builtin.command: pvesh set /cluster/firewall/options --enable 1 --policy_in DROP
+          changed_when: true
+          when: not firewall_on
+
+        - name: Wait for the firewall to load its rules (it checks for changes every 10 seconds)
+          ansible.builtin.pause:
+            seconds: 20
+          when: firewall_change
+
+        - name: Close this connection, so the next step logs in through the firewall
+          ansible.builtin.meta: reset_connection
+
+        - name: Log in again through the firewall and check that it runs
+          ansible.builtin.command: pve-firewall status
+          register: firewall_status
+          changed_when: false
+          failed_when: "'enabled/running' not in firewall_status.stdout"
+
+        - name: Check that the web UI still answers on port 8006
+          ansible.builtin.wait_for:
+            host: "{{ address }}"
+            port: 8006
+            timeout: 10
+          delegate_to: localhost
+
+        - name: Stop the undo timer, the firewall lets us in
+          ansible.builtin.systemd_service:
+            name: stage-2-firewall-undo.timer
+            state: stopped
+          when: firewall_change
+
+    # --- 4. Backup disk: emptied once, then Proxmox storage "backup" (backups only) ---
+
+    - name: Backup disk
+      tags: [backup-disk]
+      when: backup_disk is defined
+      block:
+        - name: Read the Proxmox storages
+          ansible.builtin.command: pvesh get /storage --output-format json
+          register: storages
+          changed_when: false
+
+        - name: Set up the backup disk, unless the storage "backup" exists already
+          when: "'backup' not in storages.stdout | from_json | map(attribute='storage')"
+          block:
+            - name: Find the disk with serial {{ backup_disk }}
+              ansible.builtin.command: lsblk --nodeps --noheadings --paths --output NAME,SERIAL
+              register: disks
+              changed_when: false
+
+            - name: Remember its device name
+              ansible.builtin.set_fact:
+                backup_device: "{{ (disks.stdout_lines | select('search', backup_disk) | first).split()[0] }}"
+
+            - name: Delete all partitions and data on the backup disk {{ backup_device }}
+              ansible.builtin.command: pvesh set /nodes/{{ ansible_facts.hostname }}/disks/wipedisk --disk {{ backup_device }}
+              changed_when: true
+
+            - name: Format it (ext4) and add it to Proxmox as storage "backup"
+              ansible.builtin.command: >-
+                pvesh create /nodes/{{ ansible_facts.hostname }}/disks/directory
+                --name backup --device {{ backup_device }} --filesystem ext4 --add_storage 1
+              changed_when: true
+
+            - name: Use it for backups only
+              ansible.builtin.command: pvesm set backup --content backup
+              changed_when: true
+
+    # --- 5. API token for stage 3 (OpenTofu), saved encrypted ---
+    # The user automation@pve has exactly the role "OpenTofu" on / and nothing else, and no password:
+    # it works only through its token. The token is created once (its secret is shown only then);
+    # delete the saved file to make a new one.
+
+    - name: API token
+      tags: [api-token]
+      vars:
+        # Only what stage 3 needs to create and run guests. Add a privilege when stage 3 needs more.
+        api_privileges:
+          - VM.Allocate # create and delete guests
+          - VM.Audit # read guest settings and status
+          - VM.Clone # create guests from templates
+          - VM.Config.CDROM
+          - VM.Config.CPU
+          - VM.Config.Cloudinit
+          - VM.Config.Disk
+          - VM.Config.HWType
+          - VM.Config.Memory
+          - VM.Config.Network
+          - VM.Config.Options
+          - VM.GuestAgent.Audit # read guest IP addresses from the guest agent
+          - VM.PowerMgmt # start, stop, restart guests
+          - Datastore.AllocateSpace # create guest disks
+          - Datastore.AllocateTemplate # store downloaded images and container templates
+          - Datastore.Audit # read storages
+          - SDN.Use # connect guests to the bridge vmbr0
+          - Sys.Audit # read node status and tasks
+          - Sys.AccessNetwork # let Proxmox download images from the internet
+      block:
+        - name: Read the Proxmox roles, users and permissions
+          ansible.builtin.command: pvesh get /access/{{ item }} --output-format json
+          loop: [roles, users, acl]
+          register: access
+          changed_when: false
+
+        - name: Compare with the wanted role, user and permission
+          ansible.builtin.set_fact:
+            role: "{{ access.results[0].stdout | from_json | selectattr('roleid', 'eq', 'OpenTofu') | first | default({}) }}"
+            wanted_privs: "{{ api_privileges | sort(case_sensitive=true) | join(',') }}"
+            user_exists: "{{ 'automation@pve' in access.results[1].stdout | from_json | map(attribute='userid') }}"
+            user_acl: "{{ access.results[2].stdout | from_json | selectattr('ugid', 'eq', 'automation@pve') | list }}"
+
+        - name: Give the role "OpenTofu" exactly the privileges in api_privileges
+          ansible.builtin.command: pveum role {{ 'modify' if role else 'add' }} OpenTofu --privs {{ wanted_privs }}
+          changed_when: true
+          when: role.privs | default('') != wanted_privs
+
+        - name: Create the user automation@pve
+          ansible.builtin.command: pveum user add automation@pve --comment "OpenTofu (stage 3), API token only"
+          changed_when: true
+          when: not user_exists
+
+        - name: Grant it the role "OpenTofu" on /
+          ansible.builtin.command: pveum acl modify / --users automation@pve --roles OpenTofu
+          changed_when: true
+          when: user_acl | selectattr('path', 'eq', '/') | selectattr('roleid', 'eq', 'OpenTofu') | length == 0
+
+        - name: Remove any other permission it has
+          ansible.builtin.command: pveum acl delete {{ item.path }} --users automation@pve --roles {{ item.roleid }}
+          changed_when: true
+          loop: "{{ user_acl }}"
+          loop_control:
+            label: "{{ item.roleid }} on {{ item.path }}"
+          when: item.path != '/' or item.roleid != 'OpenTofu'
+
+        - name: Check for a saved API token
+          ansible.builtin.stat:
+            path: "{{ api_secrets_file }}"
+          delegate_to: localhost
+          register: saved_token
+
+        # A token left from an earlier run is useless: its secret was never saved.
+        - name: Create the token automation@pve!tofu (it has exactly the user's permissions)
+          ansible.builtin.shell: |
+            pveum user token remove automation@pve tofu 2>/dev/null
+            pveum user token add automation@pve tofu --privsep 0 --output-format json
+          register: token
+          changed_when: true
+          no_log: true
+          when: not saved_token.stat.exists
+
+        - name: Save it encrypted (encrypting needs no YubiKey)
+          community.sops.sops_encrypt:
+            path: "{{ api_secrets_file }}"
+            content_yaml:
+              api_token: "{{ (token.stdout | from_json)['full-tokenid'] }}={{ (token.stdout | from_json).value }}"
+            mode: "0600"
+          delegate_to: localhost
+          no_log: true
+          when: not saved_token.stat.exists
+
+    - name: Record that stage 2 is done
+      ansible.builtin.copy:
+        dest: "{{ repo }}/secrets/{{ inventory_hostname }}/stage-2.done"
+        content: "stage 2 done\n"
+        mode: "0600"
+      delegate_to: localhost
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is set up: updated, VLAN-ready network, firewall on, backup storage, and an API token
+          in secrets/{{ inventory_hostname }}.api.sops.yaml. Web UI: https://{{ address }}:8006. Next: stage 3 (guests).
