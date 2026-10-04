@@ -5,3 +5,6 @@
 /build/
 /.venv/
 /.collections/
+# OpenTofu: downloaded providers and the previous state copy (the state itself is committed, encrypted).
+/stages/3-guests/.terraform/
+/stages/3-guests/terraform.tfstate.backup

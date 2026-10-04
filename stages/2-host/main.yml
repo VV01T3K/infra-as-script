@@ -8,6 +8,7 @@
   vars:
     repo: "{{ playbook_dir | dirname | dirname }}"
     api_secrets_file: "{{ repo }}/secrets/{{ inventory_hostname }}.api.sops.yaml"
+    tofu_secrets_file: "{{ repo }}/secrets/tofu.sops.yaml"
     # Undo timers for the network and firewall changes, see those parts.
     rollback_seconds: 120
   tasks:
@@ -362,8 +363,9 @@
 
     # --- 6. API token for stage 3 (OpenTofu), saved encrypted ---
     # The user automation@pve has exactly the role "OpenTofu" on / and nothing else, and no password:
-    # it works only through its token. The token is created once (its secret is shown only then);
-    # delete the saved file to make a new one.
+    # it works only through its token. The token is created once (its secret is shown only then) and
+    # saved to secrets/<machine>.api.sops.yaml; the next `mise run guests` moves it into
+    # secrets/tofu.sops.yaml. To make a new one, remove it from there (and any saved file), then re-run.
 
     - name: API token
       tags: [api-token]
@@ -426,11 +428,12 @@
             label: "{{ item.roleid }} on {{ item.path }}"
           when: item.path != '/' or item.roleid != 'OpenTofu'
 
+        # sops encrypts only the values, so the machine names under api_tokens are readable without a YubiKey.
         - name: Check for a saved API token
-          ansible.builtin.stat:
-            path: "{{ api_secrets_file }}"
-          delegate_to: localhost
-          register: saved_token
+          ansible.builtin.set_fact:
+            token_saved: "{{ api_secrets_file is exists or inventory_hostname in tofu_secrets.api_tokens | default({}) }}"
+          vars:
+            tofu_secrets: "{{ lookup('ansible.builtin.file', tofu_secrets_file, errors='ignore') | default('', true) | from_yaml | default({}, true) }}"
 
         # A token left from an earlier run is useless: its secret was never saved.
         - name: Create the token automation@pve!tofu (it has exactly the user's permissions)
@@ -440,7 +443,7 @@
           register: token
           changed_when: true
           no_log: true
-          when: not saved_token.stat.exists
+          when: not token_saved
 
         - name: Save it encrypted (encrypting needs no YubiKey)
           community.sops.sops_encrypt:
@@ -450,7 +453,14 @@
             mode: "0600"
           delegate_to: localhost
           no_log: true
-          when: not saved_token.stat.exists
+          when: not token_saved
+
+        # Public: lets OpenTofu check that it really talks to this machine (instead of skipping TLS checks).
+        - name: Save this machine's Proxmox CA certificate to inventory/proxmox-ca/
+          ansible.builtin.fetch:
+            src: /etc/pve/pve-root-ca.pem
+            dest: "{{ repo }}/inventory/proxmox-ca/{{ inventory_hostname }}.pem"
+            flat: true
 
     - name: Record that stage 2 is done
       ansible.builtin.copy:
@@ -463,4 +473,4 @@
       ansible.builtin.debug:
         msg: >-
           {{ inventory_hostname }} is set up: updated, VLAN-ready network, firewall on, backup storage, and an API token
-          in secrets/{{ inventory_hostname }}.api.sops.yaml. Web UI: https://{{ address }}:8006. Next: stage 3 (guests).
+          for OpenTofu. Web UI: https://{{ address }}:8006. Next: stage 3 (mise run guests).
