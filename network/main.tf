@@ -114,24 +114,9 @@ resource "unifi_firewall_zone_policy" "internal_to_infra" {
   }
 }
 
-resource "unifi_firewall_zone_policy" "komoda_to_proxmox_ui" {
-  name                      = "Allow komoda to Proxmox UI"
-  action                    = "ALLOW"
-  protocol                  = "tcp"
-  ip_version                = "IPV4"
-  auto_allow_return_traffic = true
-  source = {
-    zone_id = unifi_firewall_zone.infra.id
-    ips     = ["10.20.0.53"]
-  }
-  destination = {
-    zone_id = data.unifi_firewall_zone.internal.id
-    ips     = ["10.1.0.2"]
-    port    = 8006
-  }
-}
-
 # --- Switch ports ---
+# Every setting is written out (today's values), so a plan shows only what really changes.
+# forward "all" + tagged "auto" = the native network untagged plus every VLAN tagged (trunk).
 # forget_on_destroy = false: removing a device from this file must never un-adopt it.
 
 resource "unifi_device" "flex_mini" {
@@ -141,17 +126,39 @@ resource "unifi_device" "flex_mini" {
   forget_on_destroy = false
 
   port_override {
-    number                = 3
-    name                  = "Port 3"
+    number                = 1
+    name                  = "uplink (UCG port 1)"
     native_networkconf_id = unifi_network.lan["management"].id
+    forward               = "all"
     tagged_vlan_mgmt      = "auto"
+    setting_preference    = "auto"
+  }
+
+  port_override {
+    number                = 3
+    name                  = "torus"
+    native_networkconf_id = unifi_network.lan["management"].id
+    forward               = "all"
+    tagged_vlan_mgmt      = "auto"
+    setting_preference    = "auto"
   }
 
   port_override {
     number                = 4
     name                  = "Port 4"
     native_networkconf_id = unifi_network.lan["personal"].id
+    forward               = "native"
     tagged_vlan_mgmt      = "block_all"
+    setting_preference    = "auto"
+  }
+
+  port_override {
+    number                = 5
+    name                  = "kestrel"
+    native_networkconf_id = unifi_network.lan["management"].id
+    forward               = "all"
+    tagged_vlan_mgmt      = "auto"
+    setting_preference    = "auto"
   }
 }
 
@@ -162,29 +169,52 @@ resource "unifi_device" "gateway" {
   forget_on_destroy = false
 
   port_override {
-    number                = 2
-    name                  = "Port 2 (Archer AP)"
-    native_networkconf_id = unifi_network.lan["personal"].id
-    tagged_vlan_mgmt      = "block_all"
+    number                = 1
+    name                  = "Flex Mini"
+    native_networkconf_id = unifi_network.lan["management"].id
+    forward               = "all"
+    tagged_vlan_mgmt      = "auto"
+    setting_preference    = "auto"
   }
 
   port_override {
-    number                = 4
-    name                  = "Port 4"
+    number                = 2
+    name                  = "Port 2 (Archer AP)"
     native_networkconf_id = unifi_network.lan["personal"].id
+    forward               = "native"
+    tagged_vlan_mgmt      = "block_all"
+    setting_preference    = "manual"
+  }
+
+  # forward "customize" with nothing excluded: Personal untagged plus every VLAN tagged.
+  port_override {
+    number                = 4
+    name                  = "desk"
+    native_networkconf_id = unifi_network.lan["personal"].id
+    forward               = "customize"
     tagged_vlan_mgmt      = "auto"
+    setting_preference    = "auto"
   }
 }
 
 # --- Fixed client addresses ---
+# Every machine in the inventory gets its address by MAC (it also has it set statically), named after it.
 
-resource "unifi_user" "proxmox" {
-  mac        = "e0:51:d8:1a:12:db"
-  name       = "proxmox"
-  fixed_ip   = "10.1.0.2"
-  network_id = unifi_network.lan["management"].id
+resource "unifi_user" "machine" {
+  for_each = local.inventory.children.proxmox.hosts
+
+  mac        = each.value.mac
+  name       = each.key
+  fixed_ip   = each.value.address
+  network_id = unifi_network.lan[each.value.network].id
 }
 
+moved {
+  from = unifi_user.proxmox
+  to   = unifi_user.machine["kestrel"]
+}
+
+# The Wi-Fi access point (not a machine of the inventory).
 resource "unifi_user" "archer" {
   mac        = "3c:52:a1:78:1a:ab"
   name       = "ArcherC6U"
