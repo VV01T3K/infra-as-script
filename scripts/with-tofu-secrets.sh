@@ -3,6 +3,7 @@
 # then they are gone. Nothing is written to disk unencrypted.
 #   secrets/tofu.sops.yaml          api_tokens (one per machine) + state_passphrase: one YubiKey touch + PIN
 #   secrets/<machine>.api.sops.yaml a new token from stage 2: merged into tofu.sops.yaml once, then deleted
+#   secrets/unifi.sops.yaml         the router login (username, password): merged the same way
 # TLS: each Proxmox machine is checked against its own CA (inventory/proxmox-ca/*.pem, saved by stage 2).
 # Usage: scripts/with-tofu-secrets.sh <command>...
 set -euo pipefail
@@ -32,6 +33,14 @@ for f in secrets/*.api.sops.yaml; do
   save=true
 done
 
+if [ -e secrets/unifi.sops.yaml ]; then
+  echo "Adding the router login: touch your YubiKey and type its PIN." >&2
+  unifi="$(sops decrypt --output-type json secrets/unifi.sops.yaml | jq -c '{username, password}')"
+  secrets="$(printf '%s' "$secrets" | jq --argjson u "$unifi" '.unifi = $u')"
+  merged+=(secrets/unifi.sops.yaml)
+  save=true
+fi
+
 # Encrypting needs no YubiKey. The plain text only passes through a pipe and RAM ($XDG_RUNTIME_DIR).
 if $save; then
   printf '%s' "$secrets" > "$tmp/plain.json"
@@ -46,6 +55,7 @@ fi
 cat inventory/proxmox-ca/*.pem > "$tmp/proxmox-ca.pem"
 
 TF_VAR_api_tokens="$(printf '%s' "$secrets" | jq -c .api_tokens)" \
+  TF_VAR_unifi="$(printf '%s' "$secrets" | jq -c '.unifi // {username: "", password: ""}')" \
   TF_VAR_state_passphrase="$(printf '%s' "$secrets" | jq -r .state_passphrase)" \
   SSL_CERT_FILE="$tmp/proxmox-ca.pem" \
   "$@"

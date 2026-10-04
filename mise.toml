@@ -64,6 +64,11 @@ usage = 'arg "[ansible_args]..." help="Extra ansible-playbook options, e.g. --ta
 run = "scripts/with-fleet-key.sh scripts/with-service-secrets.sh ansible-playbook stages/5-services/main.yml ${usage_ansible_args:-}"
 raw = true # interactive: two YubiKey touches (fleet key, service secrets)
 
+[tasks.network]
+description = "The router: networks, firewall, switch ports, fixed addresses (shows the plan, asks, then applies)"
+run = "scripts/with-tofu-secrets.sh sh -c 'tofu -chdir=network init -input=false > /dev/null && tofu -chdir=network apply'"
+raw = true # interactive: YubiKey touch + PIN, then "yes" to apply
+
 [tasks.yubikey-ssh]
 description = "Once per YubiKey: create its SSH key on the key (touch + PIN), public half goes to keys/"
 usage = 'arg "<name>" help="Short name for the YubiKey, e.g. yubikey-c-nfc"'
@@ -89,7 +94,7 @@ echo "Fleet key ready: keys/fleet.pub (private half only in secrets/fleet-ssh-ke
 
 [tasks.check]
 description = "Lint and validate everything"
-run = ["ansible-lint", "tofu -chdir=stages/3-guests fmt -check -diff"]
+run = ["ansible-lint", "tofu -chdir=stages/3-guests fmt -check -diff", "tofu -chdir=network fmt -check -diff"]
 
 [tasks.pre-commit]
 description = "Runs before every commit: block secrets, then check"
