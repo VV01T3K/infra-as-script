@@ -1,4 +1,5 @@
-# Stage 4: from "an empty Alpine guest" to "a guest ready for containers": Python, updates, Docker.
+# Stage 4: from "an empty Alpine guest" to "a guest ready for containers": Python, updates, Docker
+# (with memory accounting for its containers).
 # Run: mise run setup   (one guest only: mise run setup dns1)
 # Needs: stage 3 done (the guest exists and runs). Safe to re-run: every step checks first.
 # Ansible reaches each guest through its Proxmox machine (pct exec), see "guests" in inventory/hosts.yml.
@@ -56,11 +57,34 @@
       register: docker_packages
       changed_when: "'Installing' in docker_packages.stdout"
 
+    # Without this Docker reports 0 B memory for its containers (see the file for why).
+    - name: Install the service that lets Docker measure its containers
+      ansible.builtin.copy:
+        src: cgroup-delegation.initd
+        dest: /etc/init.d/cgroup-delegation
+        mode: "0755"
+
+    - name: Run it now and at every boot (before Docker)
+      ansible.builtin.service:
+        name: cgroup-delegation
+        state: started
+        enabled: true
+      register: cgroup_delegation
+
     - name: Start Docker now and at every boot
       ansible.builtin.service:
         name: docker
         state: started
         enabled: true
+
+    # Running containers keep their old groups until Docker restarts; one guest at a time, so the
+    # DNS nodes are never down together.
+    - name: Restart Docker once, so running containers can be measured too
+      ansible.builtin.service:
+        name: docker
+        state: restarted
+      when: cgroup_delegation is changed # noqa: no-handler (must happen right here, before the test)
+      throttle: 1
 
     # Proves Docker works in this LXC: unprivileged, with nesting, without keyctl (only root may set that).
     - name: Run a test container

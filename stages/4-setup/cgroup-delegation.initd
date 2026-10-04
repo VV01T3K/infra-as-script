@@ -1,0 +1,28 @@
+#!/sbin/openrc-run
+# Managed by stage 4 (infra-as-script).
+# cgroup v2 hands controllers (memory, cpu, io...) to child groups only from a group with no processes
+# in it. In this LXC every process starts in the top group, so Docker gets no memory controller and
+# reports 0 B for its containers. This moves the processes into a child group "init", then hands all
+# controllers down (what Docker's own docker-in-docker image does at startup).
+
+description="Lets Docker measure its containers' memory, CPU and I/O"
+
+depend() {
+	before docker
+}
+
+start() {
+	ebegin "Handing cgroup controllers down to child groups"
+	root=/sys/fs/cgroup
+	mkdir -p "$root/init"
+	# New processes can appear while moving, so try a few times.
+	for attempt in 1 2 3 4 5; do
+		for pid in $(cat "$root/cgroup.procs"); do
+			echo "$pid" > "$root/init/cgroup.procs" 2>/dev/null
+		done
+		sed -e 's/ / +/g' -e 's/^/+/' "$root/cgroup.controllers" > "$root/cgroup.subtree_control" 2>/dev/null && break
+		sleep 1
+	done
+	grep -qw memory "$root/cgroup.subtree_control"
+	eend $?
+}
