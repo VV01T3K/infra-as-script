@@ -38,7 +38,7 @@ run = "scripts/with-fleet-key.sh ansible-playbook stages/1-access/main.yml -e ma
 raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
 
 [tasks.host]
-description = "Stage 2: set up Proxmox on a machine (packages, network, firewall, backup disk, API token)"
+description = "Stage 2: set up Proxmox on a machine (packages, power, network, firewall, backup disk, API token)"
 usage = '''
 arg "<machine>" help="Machine name from inventory/hosts.yml"
 arg "[ansible_args]..." help="Extra ansible-playbook options, e.g. --tags firewall" var=#true

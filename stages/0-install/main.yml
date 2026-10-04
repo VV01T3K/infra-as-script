@@ -128,11 +128,13 @@
 
           The stick is ready. Now:
             1. Eject the stick, plug it into {{ inventory_hostname }}.
-            2. On {{ inventory_hostname }}'s current system, boot from USB once:
+            2. On {{ inventory_hostname }}'s current system, boot from USB once
+               (as root; on Proxmox, which has no sudo, leave it out):
                  sudo efibootmgr                       (find the USB entry number)
                  sudo efibootmgr --bootnext <number> && sudo reboot
-            3. It installs Proxmox by itself (about 10-15 minutes) and reboots into it.
+            3. It installs Proxmox by itself (about 10-15 minutes) and switches itself off.
                If the USB boot fails, the old system just starts again.
+            4. Unplug the stick, then switch {{ inventory_hostname }} on.
 
           Press Enter, then I'll wait for {{ address }} to come up.
 

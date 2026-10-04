@@ -11,8 +11,9 @@ fqdn = "{{ inventory_hostname }}.{{ domain }}"
 mailto = "root@localhost"
 root-password-hashed = "{{ installer_root_password_hash }}"
 root-ssh-keys = ["{{ installer_public_key }}"]
-# Safe because the USB boot is one-time (efibootmgr --bootnext).
-reboot-mode = "reboot"
+# Switch off when done, not restart: some BIOSes (e.g. kestrel's) boot USB first,
+# so a restart with the stick still in would start the installer again.
+reboot-mode = "power-off"
 
 [network]
 source = "from-answer"
