@@ -3,7 +3,8 @@
 # Run: mise run network   (shows the plan, asks, then applies)
 # Config is the truth: whatever is managed here and removed from here is removed on the router too.
 # Not managed (set by hand, see the handoff doc): UniFi OS itself (updates, admins, remote access),
-# the built-in zones and policies, the WAN ports, and controller settings.
+# the built-in zones and policies, the WAN ports, controller settings, and the Proton VPN tunnel
+# (uploaded as Proton's config file in the UniFi UI, so it can be swapped easily).
 
 terraform {
   required_providers {
