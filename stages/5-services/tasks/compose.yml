@@ -1,0 +1,25 @@
+# Deploys one Docker Compose project to /opt/<compose_name> in the guest and starts it.
+# Vars: compose_name, compose_template (in templates/), compose_dirs (optional extra folders).
+# The compose file holds secrets, so only root can read it.
+
+- name: Create the folders for {{ compose_name }}
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+  loop: "{{ ['/opt/' + compose_name] + compose_dirs | default([]) }}"
+
+- name: Write the compose file of {{ compose_name }}
+  ansible.builtin.template:
+    src: "{{ compose_template }}"
+    dest: /opt/{{ compose_name }}/compose.yaml
+    mode: "0600"
+  no_log: true
+
+# "up" changes only what differs from the file: new image, new settings, a stopped container.
+- name: Start or update {{ compose_name }}
+  ansible.builtin.command:
+    cmd: docker compose up --detach --remove-orphans --wait
+    chdir: /opt/{{ compose_name }}
+  register: compose_up
+  changed_when: compose_up.stderr is search('Pulled|Created|Recreated|Started|Removed')

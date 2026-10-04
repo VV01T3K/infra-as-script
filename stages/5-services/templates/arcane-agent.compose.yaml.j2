@@ -1,0 +1,20 @@
+# Managed by stage 5 (infra-as-script): Arcane agent in edge mode. It connects out to the manager,
+# so this guest opens no port for it.
+services:
+  arcane-agent:
+    image: ghcr.io/getarcaneapp/agent:{{ arcane_version }}
+    container_name: arcane-agent
+    environment:
+      EDGE_AGENT: "true"
+      AGENT_TOKEN: {{ service_secrets.arcane_agent_tokens[inventory_hostname] | to_json }}
+      MANAGER_API_URL: http://{{ hostvars.arcane.address }}:3552
+      EDGE_TRANSPORT: websocket
+      TZ: {{ locale.timezone }}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - data:/app/data
+    cgroup: host
+    restart: unless-stopped
+
+volumes:
+  data:

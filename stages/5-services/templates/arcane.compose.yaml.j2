@@ -1,0 +1,24 @@
+# Managed by stage 5 (infra-as-script): the Arcane manager (dashboard + GitOps for the services).
+services:
+  arcane:
+    image: ghcr.io/getarcaneapp/manager:{{ arcane_version }}
+    container_name: arcane
+    ports:
+      - "3552:3552"
+    environment:
+      ENCRYPTION_KEY: {{ service_secrets.arcane_encryption_key | to_json }}
+      # Lets stage 5 configure Arcane through its API (sent as the X-Api-Key header).
+      ADMIN_STATIC_API_KEY: {{ service_secrets.arcane_api_key | to_json }}
+      APP_URL: http://{{ address }}:3552
+      PROJECTS_DIRECTORY: /opt/arcane/projects
+      TZ: {{ locale.timezone }}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - data:/app/data
+      - /opt/arcane/projects:/opt/arcane/projects
+    # Lets Arcane recognise its own container.
+    cgroup: host
+    restart: unless-stopped
+
+volumes:
+  data:

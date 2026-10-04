@@ -58,6 +58,12 @@ usage = 'arg "[guest]" help="One guest from inventory/hosts.yml (default: all gu
 run = "scripts/with-fleet-key.sh ansible-playbook stages/4-setup/main.yml ${usage_guest:+-e guest=$usage_guest}"
 raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
 
+[tasks.services]
+description = "Stage 5: platform services (Arcane manager + agents, the DNS cluster)"
+usage = 'arg "[ansible_args]..." help="Extra ansible-playbook options, e.g. --tags dns" var=#true'
+run = "scripts/with-fleet-key.sh scripts/with-service-secrets.sh ansible-playbook stages/5-services/main.yml ${usage_ansible_args:-}"
+raw = true # interactive: two YubiKey touches (fleet key, service secrets)
+
 [tasks.yubikey-ssh]
 description = "Once per YubiKey: create its SSH key on the key (touch + PIN), public half goes to keys/"
 usage = 'arg "<name>" help="Short name for the YubiKey, e.g. yubikey-c-nfc"'

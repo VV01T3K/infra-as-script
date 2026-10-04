@@ -1,0 +1,268 @@
+# Stage 5: the platform services: Arcane (manager + agents) and the DNS cluster (Technitium).
+# Run: mise run services   (one part only: add e.g. --tags dns)
+# Needs: stage 4 done for the guests. Two YubiKey touches: the fleet key, then the service secrets.
+# Parts (tags): arcane, agents, dns. Apps come later from services/ through Arcane's GitOps.
+# Every API call runs inside the guest against 127.0.0.1, so no password crosses the network.
+
+- name: Prepare the service secrets
+  hosts: guests
+  gather_facts: false
+  tags: [always]
+  vars:
+    repo: "{{ playbook_dir | dirname | dirname }}"
+  tasks:
+    - name: Read the service secrets (unlocked by scripts/with-service-secrets.sh)
+      ansible.builtin.set_fact:
+        service_secrets: "{{ lookup('ansible.builtin.env', 'SERVICE_SECRETS') | default('{}', true) | from_json }}"
+      run_once: true
+      no_log: true
+
+    # Arcane's password rule ("strong"): 12+ characters with upper and lower case, a digit and a symbol.
+    # A stored Arcane password that doesn't meet it is replaced.
+    - name: Create the secrets that don't exist yet
+      ansible.builtin.set_fact:
+        new_secrets: >-
+          {{ generated | dict2items | rejectattr('key', 'in', kept) | items2dict }}
+      vars:
+        strong: '^(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{12,}$'
+        kept: >-
+          {{ service_secrets.keys() | list
+             | difference([] if service_secrets.arcane_admin_password | default('') is match(strong) else ['arcane_admin_password']) }}
+        password: "{{ lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits']) }}"
+        generated:
+          technitium_admin_password: "{{ password }}"
+          arcane_admin_password: "{{ password }}-{{ lookup('ansible.builtin.password', '/dev/null', length=4, chars=['digits']) }}"
+          arcane_encryption_key: "{{ password }}"
+          # Arcane accepts only keys of the form arc_<hex>.
+          arcane_api_key: "arc_{{ lookup('ansible.builtin.password', '/dev/null', length=64, chars=['hexdigits']) | lower }}"
+          arcane_agent_tokens: {}
+      run_once: true
+      no_log: true
+
+    - name: Add them
+      ansible.builtin.set_fact:
+        service_secrets: "{{ service_secrets | combine(new_secrets) }}"
+      run_once: true
+      no_log: true
+
+    - name: Save the new secrets
+      ansible.builtin.include_tasks: tasks/save-secrets.yml
+      when: new_secrets | length > 0
+
+# --- 1. Arcane manager ---
+
+- name: Arcane manager
+  hosts: arcane
+  gather_facts: false
+  tags: [arcane]
+  vars_files: [versions.yml]
+  tasks:
+    - name: Deploy Arcane
+      ansible.builtin.include_tasks: tasks/compose.yml
+      vars:
+        compose_name: arcane
+        compose_template: arcane.compose.yaml.j2
+        compose_dirs: [/opt/arcane/projects]
+
+    - name: Wait for Arcane's API
+      ansible.builtin.uri:
+        url: http://127.0.0.1:3552/api/environments
+        headers: { X-Api-Key: "{{ service_secrets.arcane_api_key }}" }
+      register: arcane_up
+      until: arcane_up.status == 200
+      retries: 30
+      delay: 2
+      no_log: true
+
+    # Arcane starts with admin "arcane" / "arcane-admin". 401 ("current password is incorrect") means
+    # it was changed already; anything else (e.g. 400: password rule) fails here.
+    - name: Replace the default admin password with the one in secrets/services.sops.yaml
+      ansible.builtin.uri:
+        url: http://127.0.0.1:3552/api/auth/password
+        method: POST
+        headers: { X-Api-Key: "{{ service_secrets.arcane_api_key }}" }
+        body_format: json
+        body: { currentPassword: arcane-admin, newPassword: "{{ service_secrets.arcane_admin_password }}" }
+        status_code: [200, 401]
+      register: arcane_password
+      changed_when: arcane_password.status == 200
+      no_log: true
+
+    - name: Check that the admin can log in with the password from secrets/services.sops.yaml
+      ansible.builtin.uri:
+        url: http://127.0.0.1:3552/api/auth/login
+        method: POST
+        body_format: json
+        body: { username: arcane, password: "{{ service_secrets.arcane_admin_password }}" }
+      no_log: true
+
+# --- 2. Arcane agents: every guest except the manager's ---
+
+- name: Arcane agents
+  hosts: guests:!arcane
+  gather_facts: false
+  tags: [agents]
+  vars_files: [versions.yml]
+  vars:
+    repo: "{{ playbook_dir | dirname | dirname }}"
+    arcane_api: http://127.0.0.1:3552/api
+  tasks:
+    - name: Read Arcane's environments (hosts it manages)
+      ansible.builtin.uri:
+        url: "{{ arcane_api }}/environments"
+        headers: { X-Api-Key: "{{ service_secrets.arcane_api_key }}" }
+      register: environments
+      delegate_to: arcane
+      run_once: true
+      no_log: true
+
+    # An agent's key is shown only once, when its environment is created. A guest gets a new environment
+    # when it has none, or when its key is not in secrets/services.sops.yaml (the old environment goes).
+    - name: List the existing environments by name
+      ansible.builtin.set_fact:
+        existing: "{{ dict(environments.json.data | map(attribute='name') | zip(environments.json.data | map(attribute='id'))) }}"
+      run_once: true
+
+    - name: Find the guests that need a new environment
+      ansible.builtin.set_fact:
+        renew: >-
+          {{ ansible_play_hosts | reject('in', service_secrets.arcane_agent_tokens)
+             | union(ansible_play_hosts | reject('in', existing)) }}
+      run_once: true
+
+    - name: Delete the environments whose key was lost
+      ansible.builtin.uri:
+        url: "{{ arcane_api }}/environments/{{ existing[item] }}"
+        method: DELETE
+        headers: { X-Api-Key: "{{ service_secrets.arcane_api_key }}" }
+        status_code: [200, 204]
+      loop: "{{ renew | select('in', existing) }}"
+      changed_when: true
+      delegate_to: arcane
+      run_once: true
+      no_log: true
+
+    - name: Create the environments
+      ansible.builtin.uri:
+        url: "{{ arcane_api }}/environments"
+        method: POST
+        headers: { X-Api-Key: "{{ service_secrets.arcane_api_key }}" }
+        body_format: json
+        body: { name: "{{ item }}", apiUrl: "edge://{{ item }}", useApiKey: true, isEdge: true }
+        status_code: [200, 201]
+      loop: "{{ renew }}"
+      register: created
+      changed_when: true
+      delegate_to: arcane
+      run_once: true
+      no_log: true
+
+    - name: Remember the new agent keys
+      ansible.builtin.set_fact:
+        service_secrets: "{{ service_secrets | combine({'arcane_agent_tokens': new_tokens}, recursive=true) }}"
+      vars:
+        new_tokens: "{{ dict(created.results | map(attribute='item') | zip(created.results | map(attribute='json.data.apiKey'))) }}"
+      run_once: true
+      no_log: true
+      when: renew | length > 0
+
+    - name: Save them
+      ansible.builtin.include_tasks: tasks/save-secrets.yml
+      when: renew | length > 0
+
+    - name: Deploy the agent
+      ansible.builtin.include_tasks: tasks/compose.yml
+      vars:
+        compose_name: arcane-agent
+        compose_template: arcane-agent.compose.yaml.j2
+
+# --- 3. DNS cluster: dns1 creates it and holds the configuration, the others join ---
+
+- name: DNS cluster (Technitium)
+  hosts: dns
+  serial: 1 # the first node (primary) is finished before the others join it
+  gather_facts: false
+  tags: [dns]
+  vars_files: [versions.yml, dns.yml]
+  vars:
+    api: http://127.0.0.1:5380/api
+    primary: "{{ groups.dns | first }}"
+    is_primary: "{{ inventory_hostname == primary }}"
+  tasks:
+    - name: Deploy Technitium
+      ansible.builtin.include_tasks: tasks/compose.yml
+      vars:
+        compose_name: technitium
+        compose_template: technitium.compose.yaml.j2
+
+    - name: Log in to Technitium's API
+      ansible.builtin.uri:
+        url: "{{ api }}/user/login"
+        method: POST
+        body_format: form-urlencoded
+        body: { user: admin, pass: "{{ service_secrets.technitium_admin_password }}" }
+      register: login
+      until: login.json.status | default('') == 'ok'
+      retries: 30
+      delay: 2
+      no_log: true
+
+    - name: Read the cluster state
+      ansible.builtin.uri:
+        url: "{{ api }}/admin/cluster/state"
+        headers: { Authorization: "Bearer {{ login.json.token }}" }
+      register: cluster
+      failed_when: cluster.json.status != 'ok'
+
+    - name: Create the cluster, with this node as primary, for {{ dns_cluster_domain }}
+      ansible.builtin.uri:
+        url: "{{ api }}/admin/cluster/init"
+        method: POST
+        headers: { Authorization: "Bearer {{ login.json.token }}" }
+        body_format: form-urlencoded
+        body: { clusterDomain: "{{ dns_cluster_domain }}", primaryNodeIpAddresses: "{{ address }}" }
+      register: cluster_init
+      changed_when: true
+      failed_when: cluster_init.json.status != 'ok'
+      when: is_primary and not cluster.json.response.clusterInitialized
+
+    # The nodes talk HTTPS with Technitium's self-signed certificates inside the Infra network.
+    # The primary is named by its node domain (as its certificate); its address is given too, so no
+    # DNS lookup is needed.
+    - name: Join the cluster
+      ansible.builtin.uri:
+        url: "{{ api }}/admin/cluster/initJoin"
+        method: POST
+        headers: { Authorization: "Bearer {{ login.json.token }}" }
+        body_format: form-urlencoded
+        body:
+          secondaryNodeIpAddresses: "{{ address }}"
+          primaryNodeUrl: https://{{ primary }}.{{ dns_cluster_domain }}:53443/
+          primaryNodeIpAddress: "{{ hostvars[primary].address }}"
+          ignoreCertificateErrors: "true"
+          primaryNodeUsername: admin
+          primaryNodePassword: "{{ service_secrets.technitium_admin_password }}"
+        timeout: 300
+      register: cluster_join
+      changed_when: true
+      failed_when: false # checked below, where the error can be shown without the password
+      when: not is_primary and not cluster.json.response.clusterInitialized
+      no_log: true
+
+    - name: Check that joining worked
+      ansible.builtin.assert:
+        that: cluster_join.json.status | default('') == 'ok'
+        fail_msg: "Joining failed: {{ cluster_join.json.errorMessage | default(cluster_join.msg | default('no answer')) }}"
+        quiet: true
+      when: cluster_join is not skipped
+
+    - name: Configure the cluster (on the primary; it passes everything on)
+      ansible.builtin.include_tasks: tasks/technitium-config.yml
+      when: is_primary
+
+    - name: Log out of Technitium's API
+      ansible.builtin.uri:
+        url: "{{ api }}/user/logout"
+        headers: { Authorization: "Bearer {{ login.json.token }}" }
+      changed_when: false
+      failed_when: false # joining the cluster replaces the users, so this session may be gone already

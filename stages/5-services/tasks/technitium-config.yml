@@ -1,0 +1,121 @@
+# Applies dns.yml to the cluster through the primary node's API: blocklists, zones and records.
+# Settings and zones in the cluster catalog reach the other nodes by themselves.
+# Expects: api, login (from the login step), dns_* from dns.yml.
+
+- name: Read the DNS settings
+  ansible.builtin.uri:
+    url: "{{ api }}/settings/get"
+    headers: { Authorization: "Bearer {{ login.json.token }}" }
+  register: settings
+  failed_when: settings.json.status != 'ok'
+
+- name: Turn on blocking with exactly the lists in dns.yml
+  ansible.builtin.uri:
+    url: "{{ api }}/settings/set"
+    method: POST
+    headers: { Authorization: "Bearer {{ login.json.token }}" }
+    body_format: form-urlencoded
+    body: { enableBlocking: "true", blockListUrls: "{{ dns_blocklists | join(',') }}" }
+  register: settings_set
+  changed_when: true
+  failed_when: settings_set.json.status != 'ok'
+  when: >-
+    not settings.json.response.enableBlocking or
+    settings.json.response.blockListUrls | default([], true) | sort != dns_blocklists | sort
+
+# --- Zones ---
+
+- name: Read the zones
+  ansible.builtin.uri:
+    url: "{{ api }}/zones/list"
+    headers: { Authorization: "Bearer {{ login.json.token }}" }
+  register: zones
+  failed_when: zones.json.status != 'ok'
+
+# Zones in the cluster catalog are copied to every node. "this-server": names without our records
+# are looked up normally.
+- name: Create the zones that are missing
+  ansible.builtin.uri:
+    url: "{{ api }}/zones/create"
+    method: POST
+    headers: { Authorization: "Bearer {{ login.json.token }}" }
+    body_format: form-urlencoded
+    body: >-
+      {{ {'zone': item.key, 'type': 'Primary' if item.value.type == 'primary' else 'Forwarder',
+          'catalog': 'cluster-catalog.' + dns_cluster_domain}
+         | combine({'initializeForwarder': 'true', 'forwarder': 'this-server'} if item.value.type == 'forwarder' else {}) }}
+  register: zone_created
+  changed_when: true
+  failed_when: zone_created.json.status != 'ok'
+  loop: "{{ dns_zones | dict2items | rejectattr('key', 'in', zones.json.response.zones | map(attribute='name')) }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+# --- Records (types A, CNAME, ANAME; others, like the zone's own SOA/NS/FWD, are left alone) ---
+
+- name: Read the records of each zone
+  ansible.builtin.uri:
+    url: "{{ api }}/zones/records/get"
+    headers: { Authorization: "Bearer {{ login.json.token }}" }
+    body_format: form-urlencoded
+    method: POST
+    body: { domain: "{{ item }}", zone: "{{ item }}", listZone: "true" }
+  register: records
+  failed_when: records.json.status != 'ok'
+  loop: "{{ dns_zones.keys() | list }}"
+
+# Both sides as "zone|name|type|value" strings, names fully qualified, so they compare directly.
+- name: Compare the records with dns.yml
+  ansible.builtin.set_fact:
+    wanted_records: "{{ wanted }}"
+    current_records: "{{ current }}"
+  vars:
+    managed_types: [A, CNAME, ANAME]
+    wanted: >-
+      {%- set out = [] -%}
+      {%- for zone, z in dns_zones.items() -%}
+        {%- for r in z.records -%}
+          {%- set fqdn = zone if r.name == '@' else r.name ~ '.' ~ zone -%}
+          {%- set _ = out.append(zone ~ '|' ~ fqdn ~ '|' ~ r.type ~ '|' ~ r.value) -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
+    current: >-
+      {%- set out = [] -%}
+      {%- for result in records.results -%}
+        {%- for r in result.json.response.records if r.type in managed_types -%}
+          {%- set value = r.rData.ipAddress | default(r.rData.cname | default(r.rData.aname | default(''))) -%}
+          {%- set _ = out.append(result.item ~ '|' ~ r.name ~ '|' ~ r.type ~ '|' ~ value) -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Add the records that are missing
+  ansible.builtin.uri:
+    url: "{{ api }}/zones/records/add"
+    method: POST
+    headers: { Authorization: "Bearer {{ login.json.token }}" }
+    body_format: form-urlencoded
+    body: "{{ {'zone': r[0], 'domain': r[1], 'type': r[2], value_field[r[2]]: r[3]} }}"
+  vars:
+    r: "{{ item.split('|') }}"
+    value_field: { A: ipAddress, CNAME: cname, ANAME: aname }
+  register: record_added
+  changed_when: true
+  failed_when: record_added.json.status != 'ok'
+  loop: "{{ wanted_records | difference(current_records) }}"
+
+- name: Remove the records that are not in dns.yml
+  ansible.builtin.uri:
+    url: "{{ api }}/zones/records/delete"
+    method: POST
+    headers: { Authorization: "Bearer {{ login.json.token }}" }
+    body_format: form-urlencoded
+    body: "{{ {'zone': r[0], 'domain': r[1], 'type': r[2]} | combine({value_field[r[2]]: r[3]} if r[2] != 'CNAME' else {}) }}"
+  vars:
+    r: "{{ item.split('|') }}"
+    value_field: { A: ipAddress, ANAME: aname }
+  register: record_removed
+  changed_when: true
+  failed_when: record_removed.json.status != 'ok'
+  loop: "{{ current_records | difference(wanted_records) }}"

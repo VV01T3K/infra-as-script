@@ -5,3 +5,7 @@ extra_vars:
 exclude_paths:
   - .sops.yaml
   - secrets/
+# run_once is used on purpose (one API call or one secrets file for many hosts); this repo never uses
+# the "free" strategy that the rule warns about.
+skip_list:
+  - run-once[task]

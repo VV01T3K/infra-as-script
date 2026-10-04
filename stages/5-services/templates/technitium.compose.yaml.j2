@@ -1,0 +1,21 @@
+# Managed by stage 5 (infra-as-script): Technitium DNS server, one node of the cluster.
+services:
+  dns:
+    image: docker.io/technitium/dns-server:{{ technitium_version }}
+    container_name: technitium
+    hostname: {{ inventory_hostname }}
+    # Host network: DNS on port 53 of the guest itself, and real client addresses in the logs.
+    network_mode: host
+    environment:
+      DNS_SERVER_DOMAIN: {{ inventory_hostname }}.{{ dns_cluster_domain }}
+      # Used only when the server starts for the very first time.
+      DNS_SERVER_ADMIN_PASSWORD: {{ service_secrets.technitium_admin_password | to_json }}
+      DNS_SERVER_PREFER_IPV6: "false"
+      DNS_SERVER_LOG_USING_LOCAL_TIME: "true"
+      TZ: {{ locale.timezone }}
+    volumes:
+      - config:/etc/dns
+    restart: unless-stopped
+
+volumes:
+  config:
