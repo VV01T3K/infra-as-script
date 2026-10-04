@@ -2,3 +2,5 @@
 collections:
   - name: community.sops # read and write sops-encrypted files
     version: 2.4.0
+  - name: community.proxmox # connection to guests through their Proxmox machine (pct exec)
+    version: 2.0.0

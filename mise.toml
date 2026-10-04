@@ -52,6 +52,12 @@ description = "Stage 3: create the guests listed in inventory/hosts.yml (shows t
 run = "scripts/with-tofu-secrets.sh sh -c 'tofu -chdir=stages/3-guests init -input=false > /dev/null && tofu -chdir=stages/3-guests apply'"
 raw = true # interactive: YubiKey touch + PIN, then "yes" to apply
 
+[tasks.setup]
+description = "Stage 4: set up the guests (Python, updates, Docker)"
+usage = 'arg "[guest]" help="One guest from inventory/hosts.yml (default: all guests)"'
+run = "scripts/with-fleet-key.sh ansible-playbook stages/4-setup/main.yml ${usage_guest:+-e guest=$usage_guest}"
+raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
+
 [tasks.yubikey-ssh]
 description = "Once per YubiKey: create its SSH key on the key (touch + PIN), public half goes to keys/"
 usage = 'arg "<name>" help="Short name for the YubiKey, e.g. yubikey-c-nfc"'

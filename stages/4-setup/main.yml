@@ -1,0 +1,74 @@
+# Stage 4: from "an empty Alpine guest" to "a guest ready for containers": Python, updates, Docker.
+# Run: mise run setup   (one guest only: mise run setup dns1)
+# Needs: stage 3 done (the guest exists and runs). Safe to re-run: every step checks first.
+# Ansible reaches each guest through its Proxmox machine (pct exec), see "guests" in inventory/hosts.yml.
+
+- name: Trust the Proxmox machines for the connection to guests
+  hosts: proxmox
+  connection: local # everything in this play happens on your computer
+  gather_facts: false
+  vars:
+    # Use this computer's Python; otherwise Ansible remembers it as the machine's Python.
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    repo: "{{ playbook_dir | dirname | dirname }}"
+  tasks:
+    # paramiko reads only ~/.ssh/known_hosts. The keys come from the repo's own copy, so a reinstalled
+    # machine's new key replaces the old one here too.
+    - name: Copy the machine's SSH host key from secrets/known_hosts to ~/.ssh/known_hosts
+      ansible.builtin.known_hosts:
+        path: ~/.ssh/known_hosts
+        name: "{{ address }}"
+        key: "{{ item }}"
+      loop: "{{ lookup('ansible.builtin.file', repo + '/secrets/known_hosts').splitlines() | select('match', address ~ ' ') }}"
+      loop_control:
+        label: "{{ item.split()[0] }} {{ item.split()[1] }}"
+      throttle: 1 # one machine at a time: they all write the same file
+
+- name: Set up the guests
+  hosts: "{{ guest | default('guests') }}"
+  gather_facts: false
+  tasks:
+    # Alpine comes without Python, which every other Ansible step needs; "raw" runs a plain command.
+    # "executable" is required: without it, raw doesn't wrap the command in a shell, and the
+    # connection passes it on unquoted, so the Proxmox machine's shell would run everything after "||".
+    - name: Install Python
+      ansible.builtin.raw: command -v python3 || apk add --no-cache python3
+      args:
+        executable: /bin/sh
+      register: python
+      changed_when: "'Installing' in python.stdout"
+
+    # Docker is in Alpine's "community" repository; the template may list only "main".
+    - name: Turn on Alpine's community repository
+      ansible.builtin.shell: |
+        grep -q '/community$' /etc/apk/repositories && exit 0
+        sed -n 's#/main$#/community#p' /etc/apk/repositories >> /etc/apk/repositories && echo added
+      register: community_repo
+      changed_when: "'added' in community_repo.stdout"
+
+    - name: Install all updates
+      ansible.builtin.command: apk upgrade --update-cache --no-cache
+      register: upgrade
+      changed_when: "'Upgrading' in upgrade.stdout or 'Installing' in upgrade.stdout"
+
+    - name: Install Docker and its compose plugin
+      ansible.builtin.command: apk add --no-cache docker docker-cli-compose
+      register: docker_packages
+      changed_when: "'Installing' in docker_packages.stdout"
+
+    - name: Start Docker now and at every boot
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    # Proves Docker works in this LXC: unprivileged, with nesting, without keyctl (only root may set that).
+    - name: Run a test container
+      ansible.builtin.command: docker run --rm hello-world
+      register: hello
+      changed_when: false
+      failed_when: "'Hello from Docker!' not in hello.stdout"
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} is ready for containers. Next: stage 5 (services)."

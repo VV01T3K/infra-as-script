@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
   "ansible-core==2.21.4",
   "ansible-lint==26.9.0",
+  "paramiko==5.0.0", # SSH library for the connection to guests (stage 4)
 ]
 
 [tool.uv]
