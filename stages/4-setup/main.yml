@@ -72,19 +72,37 @@
         enabled: true
       register: cgroup_delegation
 
+    # Docker's default log files (json-file) grow forever. "local" keeps them compressed and capped at about
+    # 100 MB per container (newest kept); `docker logs` and Arcane's log view work the same.
+    - name: Create Docker's settings folder (the package doesn't)
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        mode: "0755"
+
+    - name: Keep container logs compressed and capped (Docker's "local" log driver)
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "log-driver": "local"
+          }
+        mode: "0644"
+      register: docker_settings
+
     - name: Start Docker now and at every boot
       ansible.builtin.service:
         name: docker
         state: started
         enabled: true
 
-    # Running containers keep their old groups until Docker restarts; one guest at a time, so the
-    # DNS nodes are never down together.
-    - name: Restart Docker once, so running containers can be measured too
+    # Running containers keep their old groups until Docker restarts, and Docker reads daemon.json only at
+    # start. One guest at a time, so the DNS nodes are never down together.
+    - name: Restart Docker once, for new cgroup or Docker settings
       ansible.builtin.service:
         name: docker
         state: restarted
-      when: cgroup_delegation is changed # noqa: no-handler (must happen right here, before the test)
+      when: cgroup_delegation is changed or docker_settings is changed # noqa: no-handler (must happen here, before the test)
       throttle: 1
 
     # Proves Docker works in this LXC: unprivileged, with nesting, without keyctl (only root may set that).

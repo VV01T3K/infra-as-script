@@ -25,11 +25,29 @@
   loop: "{{ compose_files | default({}) | dict2items }}"
   register: compose_extra
 
+# A container keeps the log settings Docker had when it was created (stage 4 sets them); "up" alone
+# doesn't notice when they changed, so such containers are re-created once.
+- name: Check the log settings of the containers of {{ compose_name }}
+  ansible.builtin.shell: |
+    want="$(docker info --format "$INFO")"
+    for id in $(docker compose ps --quiet); do
+      [ "$(docker inspect --format "$LOG" "$id")" = "$want" ] || echo outdated
+    done
+  args:
+    chdir: /opt/{{ compose_name }}
+  environment:
+    INFO: "{{ '{{' }}.LoggingDriver{{ '}}' }}"
+    LOG: "{{ '{{' }}.HostConfig.LogConfig.Type{{ '}}' }}"
+  register: log_settings
+  changed_when: false
+
 # "up" changes only what differs from the file: new image, new settings, a stopped container.
 # Images with "build" are built when their tag is missing (a new version means a new tag).
 - name: Start or update {{ compose_name }}
   ansible.builtin.command:
-    cmd: docker compose up --detach --remove-orphans --wait
+    cmd: >-
+      docker compose up --detach --remove-orphans --wait
+      {{ '--force-recreate' if 'outdated' in log_settings.stdout else '' }}
     chdir: /opt/{{ compose_name }}
   register: compose_up
   changed_when: compose_up.stderr is search('Pulled|Built|Created|Recreated|Started|Removed')
