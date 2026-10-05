@@ -13,6 +13,8 @@ services:
       ADMIN_STATIC_API_KEY: {{ service_secrets.arcane_api_key | to_json }}
       APP_URL: https://{{ arcane_host }}
       PROJECTS_DIRECTORY: /opt/arcane/projects
+      # No usage heartbeat to checkin.getarcane.app.
+      ANALYTICS_DISABLED: "true"
       TZ: {{ locale.timezone }}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

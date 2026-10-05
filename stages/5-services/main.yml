@@ -82,6 +82,14 @@
   vars_files: [versions.yml]
   vars:
     old_guest: "{{ hostvars.arcane }}"
+    arcane_api: http://127.0.0.1:3552/api
+    # Kept in code: a change in the web UI is set back on the next run.
+    arcane_admin_preferences: # the user "arcane": English and 24-hour time (otherwise it follows the browser)
+      locale: en
+      timeFormat: 24h
+    arcane_settings: # global settings ("0" = the manager's own environment); values are strings
+      enableGravatar: "false" # no avatar requests from the browser to gravatar.com
+      autoUpdate: "false" # versions are pinned in this repo; Arcane must not update containers by itself
   tasks:
     # Temporary (step 4 of the handoff): Arcane moves from the guest "arcane" to this one. Its data (settings,
     # environments, agent keys) is copied once, before Arcane first starts here; the encryption key stays the
@@ -173,6 +181,50 @@
         method: POST
         body_format: json
         body: { username: arcane, password: "{{ service_secrets.arcane_admin_password }}" }
+      no_log: true
+
+    - name: Read the user "arcane" and the global settings
+      ansible.builtin.uri:
+        url: "{{ arcane_api }}/{{ item }}"
+        headers: { X-Api-Key: "{{ service_secrets.arcane_api_key }}" }
+      loop: ["users?limit=100", environments/0/settings]
+      register: arcane_current
+      no_log: true
+
+    # Only the keys set in code are compared; a key Arcane doesn't report counts as empty.
+    - name: Compare them with the code
+      ansible.builtin.set_fact:
+        arcane_admin: "{{ admin }}"
+        arcane_admin_now: "{{ dict(wanted_user | zip(wanted_user | map('extract', blank_user | combine(admin)))) }}"
+        arcane_settings_now: "{{ dict(wanted_settings | zip(wanted_settings | map('extract', blank_settings | combine(current)))) }}"
+      vars:
+        admin: "{{ arcane_current.results[0].json.data | selectattr('username', 'eq', 'arcane') | first }}"
+        current: "{{ arcane_current.results[1].json | items2dict(key_name='key', value_name='value') }}"
+        wanted_user: "{{ arcane_admin_preferences.keys() | list }}"
+        wanted_settings: "{{ arcane_settings.keys() | list }}"
+        blank_user: "{{ dict(wanted_user | zip(wanted_user | map('regex_replace', '.*', ''))) }}"
+        blank_settings: "{{ dict(wanted_settings | zip(wanted_settings | map('regex_replace', '.*', ''))) }}"
+
+    - name: Set the language and time format of the user "arcane"
+      ansible.builtin.uri:
+        url: "{{ arcane_api }}/users/{{ arcane_admin.id }}"
+        method: PUT
+        headers: { X-Api-Key: "{{ service_secrets.arcane_api_key }}" }
+        body_format: json
+        body: "{{ arcane_admin_preferences }}"
+      changed_when: true
+      when: arcane_admin_now != arcane_admin_preferences
+      no_log: true
+
+    - name: Set the global settings
+      ansible.builtin.uri:
+        url: "{{ arcane_api }}/environments/0/settings"
+        method: PUT
+        headers: { X-Api-Key: "{{ service_secrets.arcane_api_key }}" }
+        body_format: json
+        body: "{{ arcane_settings }}"
+      changed_when: true
+      when: arcane_settings_now != arcane_settings
       no_log: true
 
 # --- 3. Arcane agents: every guest except the manager's (and the old manager guest "arcane") ---
