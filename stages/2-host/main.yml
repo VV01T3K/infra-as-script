@@ -188,8 +188,9 @@
 
     # --- 4. Firewall: only admin_from networks may reach SSH and the web UI ---
     # Proxmox lets the IPSet "management" in to SSH (22), the web UI (8006) and consoles; the rest is dropped.
-    # The IPSet holds exactly the admin_from networks: missing ones are added, others removed.
-    # If a change locks us out, the firewall turns itself off after rollback_seconds.
+    # Wanted: firewall on, incoming policy DROP, IPSet = exactly the admin_from networks. Each is checked on its
+    # own, so e.g. a firewall that is on but lets everything in (policy ACCEPT) is fixed too.
+    # If any change locks us out, the firewall turns itself off after rollback_seconds.
 
     - name: Firewall
       tags: [firewall]
@@ -212,15 +213,17 @@
           changed_when: false
           when: "'management' in ipsets.stdout | from_json | map(attribute='name')"
 
-        - name: Compare with admin_from ({{ admin_from | join(', ') }})
+        - name: Compare with the wanted settings and admin_from ({{ admin_from | join(', ') }})
           ansible.builtin.set_fact:
-            firewall_on: "{{ (firewall_options.stdout | from_json).enable | default(0) | bool }}"
+            firewall_options_ok: "{{ options.enable | default(0) | int == 1 and options.policy_in | default('') == 'DROP' }}"
             management_exists: "{{ management is not skipped }}"
             current_subnets: "{{ management.stdout | default('[]') | from_json | map(attribute='cidr') | list }}"
+          vars:
+            options: "{{ firewall_options.stdout | from_json }}"
 
         - name: Note whether anything changes
           ansible.builtin.set_fact:
-            firewall_change: "{{ not firewall_on or not management_exists or current_subnets | sort != admin_subnets | sort }}"
+            firewall_change: "{{ not firewall_options_ok or not management_exists or current_subnets | sort != admin_subnets | sort }}"
 
         - name: Start the undo timer (turns the firewall off unless stopped in time)
           ansible.builtin.command: >-
@@ -248,7 +251,7 @@
         - name: Turn the firewall on, dropping everything incoming that isn't allowed
           ansible.builtin.command: pvesh set /cluster/firewall/options --enable 1 --policy_in DROP
           changed_when: true
-          when: not firewall_on
+          when: not firewall_options_ok
 
         - name: Wait for the firewall to load its rules (it checks for changes every 10 seconds)
           ansible.builtin.pause:
@@ -277,54 +280,87 @@
             state: stopped
           when: firewall_change
 
-    # --- 5. Backup disk: Proxmox storage "backup" (backups only) ---
-    # wipe: true  = emptied and formatted once (Proxmox's "Disks > Directory").
-    # wipe: false = its filesystem is mounted as it is, keeping what's on it.
+        # After the undo timer: a wrong setting here stops the run but leaves the firewall on.
+        - name: Check that the firewall is on and drops everything incoming that isn't allowed
+          ansible.builtin.command: pvesh get /cluster/firewall/options --output-format json
+          register: firewall_options_now
+          changed_when: false
+          failed_when: >-
+            (firewall_options_now.stdout | from_json).enable | default(0) | int != 1
+            or (firewall_options_now.stdout | from_json).policy_in | default('') != 'DROP'
+
+    # --- 5. Backup disk: Proxmox storage "backup" (backups only), on the disk with serial backup_disk.serial ---
+    # A normal run never erases anything. If the storage is missing (e.g. after reinstalling Proxmox) and the disk
+    # holds one Linux filesystem, that filesystem is mounted as it is, keeping what's on it. Anything else (empty
+    # disk, other contents) stops the run and shows what is there.
+    # Erasing and formatting the disk is a separate, explicit run that names the disk by its serial:
+    #   mise run host <machine> --tags backup-disk -e initialize_backup_disk=<serial>
+    # It works only while the storage "backup" doesn't exist, and deletes everything on that disk.
 
     - name: Backup disk
       tags: [backup-disk]
       when: backup_disk is defined
+      vars:
+        mountable_filesystems: [ext4, ext3, ext2, xfs, btrfs]
+        initialize: "{{ initialize_backup_disk is defined }}"
       block:
         - name: Read the Proxmox storages
           ansible.builtin.command: pvesh get /storage --output-format json
           register: storages
           changed_when: false
 
-        - name: Set up the backup disk, unless the storage "backup" exists already
-          when: "'backup' not in storages.stdout | from_json | map(attribute='storage')"
+        - name: Note whether the storage "backup" exists
+          ansible.builtin.set_fact:
+            backup_storage_exists: "{{ 'backup' in storages.stdout | from_json | map(attribute='storage') }}"
+
+        - name: Refuse to initialize a disk that is in use as storage "backup"
+          ansible.builtin.fail:
+            msg: >-
+              The storage "backup" exists, so nothing was erased. To start the disk over, remove the storage and
+              unmount the disk first (by hand, after checking what's on it).
+          when: initialize and backup_storage_exists
+
+        - name: Set up the storage "backup"
+          when: not backup_storage_exists
           block:
-            - name: Find the disk with serial {{ backup_disk.serial }}
-              ansible.builtin.command: lsblk --nodeps --noheadings --paths --output NAME,SERIAL
+            - name: Read the disks and what is on them (read only)
+              ansible.builtin.command: lsblk --json --paths --output NAME,SERIAL,PTTYPE,FSTYPE,UUID,MOUNTPOINTS
               register: disks
               changed_when: false
 
-            - name: Remember its device name
+            - name: Find the disk with serial {{ backup_disk.serial }}
               ansible.builtin.set_fact:
-                backup_device: "{{ (disks.stdout_lines | select('search', backup_disk.serial) | first).split()[0] }}"
+                backup_matches: "{{ (disks.stdout | from_json).blockdevices | selectattr('serial', 'eq', backup_disk.serial) | list }}"
 
-            - name: Delete all partitions and data on the backup disk
-              ansible.builtin.command: pvesh set /nodes/{{ ansible_facts.hostname }}/disks/wipedisk --disk {{ backup_device }}
-              changed_when: true
-              when: backup_disk.wipe
+            - name: Require exactly one disk with that serial
+              ansible.builtin.assert:
+                that: backup_matches | length == 1
+                fail_msg: "Expected one disk with serial {{ backup_disk.serial }}, found {{ backup_matches | length }}. Nothing was changed."
 
-            - name: Format it (ext4) and add it to Proxmox as storage "backup"
-              ansible.builtin.command: >-
-                pvesh create /nodes/{{ ansible_facts.hostname }}/disks/directory
-                --name backup --device {{ backup_device }} --filesystem ext4 --add_storage 1
-              changed_when: true
-              when: backup_disk.wipe
+            # The disk itself and its partitions (a filesystem can sit on either).
+            - name: List what is on it
+              ansible.builtin.set_fact:
+                backup_device: "{{ backup_matches[0].name }}"
+                backup_parts: "{{ [backup_matches[0]] + backup_matches[0].children | default([]) }}"
+
+            - name: Remember its Linux filesystems and describe the contents
+              ansible.builtin.set_fact:
+                backup_filesystems: "{{ backup_parts | selectattr('fstype', 'in', mountable_filesystems) | list }}"
+                backup_contents: >-
+                  {% for p in backup_parts %}{{ p.name }}: {{ [p.pttype, p.fstype] | select | join(' ') or 'nothing recognised' }};
+                  {% endfor %}
 
             - name: Mount its existing filesystem
-              when: not backup_disk.wipe
+              when: not initialize
               block:
-                - name: Find the filesystem on the backup disk
-                  ansible.builtin.command: lsblk --list --noheadings --output FSTYPE,UUID {{ backup_device }}
-                  register: filesystems
-                  changed_when: false
-
-                - name: Remember its type and ID
-                  ansible.builtin.set_fact:
-                    backup_fs: "{{ filesystems.stdout_lines | map('trim') | select | first | split }}"
+                - name: Stop unless it has exactly one Linux filesystem to mount
+                  ansible.builtin.fail:
+                    msg: >-
+                      Nothing was changed. {{ backup_device }} (serial {{ backup_disk.serial }}) holds:
+                      {{ backup_contents | trim }} Expected exactly one of {{ mountable_filesystems | join(', ') }}.
+                      If it is new, or everything on it may be deleted: mise run host {{ inventory_hostname }}
+                      --tags backup-disk -e initialize_backup_disk={{ backup_disk.serial }}
+                  when: backup_filesystems | length != 1
 
                 # The same kind of mount unit that Proxmox's "Disks > Directory" writes.
                 - name: Mount it at /mnt/pve/backup at every boot
@@ -336,9 +372,9 @@
                       Description=Mount storage 'backup' under /mnt/pve
 
                       [Mount]
-                      What=/dev/disk/by-uuid/{{ backup_fs[1] }}
+                      What=/dev/disk/by-uuid/{{ backup_filesystems[0].uuid }}
                       Where=/mnt/pve/backup
-                      Type={{ backup_fs[0] }}
+                      Type={{ backup_filesystems[0].fstype }}
                       Options=defaults
 
                       [Install]
@@ -352,14 +388,38 @@
                     enabled: true
                     state: started
 
-                - name: Add it to Proxmox as storage "backup"
+                - name: Add it to Proxmox as storage "backup", for backups only
                   ansible.builtin.command: pvesm add dir backup --path /mnt/pve/backup --is_mountpoint yes --content backup
                   changed_when: true
 
-            - name: Use it for backups only
-              ansible.builtin.command: pvesm set backup --content backup
-              changed_when: true
-              when: backup_disk.wipe
+            - name: Erase and format the disk (only when asked for by its serial)
+              when: initialize
+              block:
+                - name: Require the serial of this machine's backup disk
+                  ansible.builtin.assert:
+                    that: initialize_backup_disk | string == backup_disk.serial | string
+                    fail_msg: >-
+                      initialize_backup_disk={{ initialize_backup_disk }} is not this machine's backup disk
+                      ({{ backup_disk.serial }}). Nothing was changed.
+
+                - name: Require that nothing on it is mounted
+                  ansible.builtin.assert:
+                    that: backup_parts | map(attribute='mountpoints') | flatten | select | length == 0
+                    fail_msg: "Something on {{ backup_device }} is mounted. Nothing was changed."
+
+                - name: Delete all partitions and data on the backup disk
+                  ansible.builtin.command: pvesh set /nodes/{{ ansible_facts.hostname }}/disks/wipedisk --disk {{ backup_device }}
+                  changed_when: true
+
+                - name: Format it (ext4) and add it to Proxmox as storage "backup"
+                  ansible.builtin.command: >-
+                    pvesh create /nodes/{{ ansible_facts.hostname }}/disks/directory
+                    --name backup --device {{ backup_device }} --filesystem ext4 --add_storage 1
+                  changed_when: true
+
+                - name: Use it for backups only
+                  ansible.builtin.command: pvesm set backup --content backup
+                  changed_when: true
 
     # --- 6. API token for stage 3 (OpenTofu), saved encrypted ---
     # The user automation@pve has exactly the role "OpenTofu" on / and nothing else, and no password:

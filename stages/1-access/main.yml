@@ -127,21 +127,30 @@
       delegate_to: localhost
       register: installer_key
 
-    # Keeps keys whose key data is in keys/, and Proxmox's own root@<node> keys. Removes the rest
-    # (installer key, retired keys). Rewritten in place, see above. Prints what it removed.
-    - name: Allow exactly the keys in keys/ (plus Proxmox's own keys)
+    # Keeps the keys whose key data is in keys/ or in this machine's own root key (/root/.ssh/id_*.pub, which
+    # Proxmox adds for itself). Removes the rest (installer key, retired keys), whatever their comment says:
+    # a comment like "root@old-laptop" is just text. Rewritten in place, see above. Prints what it removed.
+    # In a Proxmox cluster the file also holds the other nodes' keys, which this can't tell apart, so it stops.
+    - name: Allow exactly the keys in keys/ (plus this machine's own root key)
       ansible.builtin.shell: |
         set -o pipefail
         f=/root/.ssh/authorized_keys
+        [ ! -e /etc/pve/corosync.conf ] || { echo "In a Proxmox cluster: other nodes' keys not handled, nothing changed" >&2; exit 1; }
+        own="$(cat /root/.ssh/id_*.pub)" || { echo "No root key in /root/.ssh, nothing changed" >&2; exit 1; }
+        allowed="$ALLOWED"$'\n'"$(awk '{print $2}' <<< "$own")"
         kept="" removed=""
         while IFS= read -r line; do
           [ -n "$line" ] || continue
-          data="$(printf '%s\n' "$line" | awk '{print $2}')"
-          comment="$(printf '%s\n' "$line" | awk '{print $NF}')"
-          if printf '%s\n' "$ALLOWED" | grep -qxF "$data" || [[ "$comment" == root@* ]]; then
+          read -ra fields <<< "$line"
+          keep=""
+          # The key data is usually the 2nd field, later if the line starts with options.
+          for field in "${fields[@]}"; do
+            printf '%s\n' "$allowed" | grep -qxF -- "$field" && keep=1 && break
+          done
+          if [ -n "$keep" ]; then
             kept+="$line"$'\n'
           else
-            removed+="$comment "
+            removed+="${fields[-1]} "
           fi
         done < "$f"
         [ -n "$removed" ] || exit 0
