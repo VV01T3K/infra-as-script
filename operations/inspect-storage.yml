@@ -1,0 +1,194 @@
+# Read only: what disks the Proxmox machines have, how healthy they are, and what is on the backup storage.
+# Run: mise run inspect-storage   (changes nothing; every step only reads)
+# The second part (temporary, until Research Cruise has moved) looks for its database on the old guest externum.
+
+- name: Disks and backups on the Proxmox machines
+  hosts: proxmox
+  gather_facts: false
+  tasks:
+    - name: List the disks, their partitions and what is on them
+      ansible.builtin.command: lsblk -e 7 -o NAME,SIZE,TRAN,ROTA,SERIAL,MODEL,PTTYPE,FSTYPE,LABEL,MOUNTPOINTS
+      register: disks
+      changed_when: false
+
+    - name: Find the whole disks (no partitions, no RAM disks)
+      ansible.builtin.command: lsblk -dn -e 1,7,251,252 -o PATH,TYPE
+      register: disk_paths
+      changed_when: false
+
+    # smartctl's exit code is a bit mask: bit 1 (value 2) = it could not talk to the disk. USB disks often
+    # need "-d sat", so those are asked again that way.
+    - name: Read each disk's health (SMART)
+      ansible.builtin.shell: |
+        smartctl --json=c -a "$DISK"
+        [ $(( $? & 2 )) -eq 0 ] || smartctl --json=c -d sat -a "$DISK"
+      environment:
+        DISK: "{{ item }}"
+      loop: "{{ disk_paths.stdout_lines | select('search', ' disk$') | map('split') | map('first') | list }}"
+      register: smart
+      changed_when: false
+      failed_when: false
+
+    # wipefs --no-act only lists signatures (partition tables, filesystems, RAID or LVM marks); it changes nothing.
+    # An empty list for a disk means there is nothing recognisable on it.
+    - name: List every signature on the whole disks (read only)
+      ansible.builtin.shell: |
+        for d in $DISKS; do echo "== $d"; wipefs --no-act "$d"; done
+      environment:
+        DISKS: "{{ disk_paths.stdout_lines | select('search', ' disk$') | map('split') | map('first') | join(' ') }}"
+      register: signatures
+      changed_when: false
+
+    # Linux counts the sectors (512 bytes) written to each disk since boot; with the uptime that gives today's
+    # write rate, under what runs now (the SSD's own total also includes everything before).
+    - name: Measure how much is written to each disk per day since the last boot
+      ansible.builtin.shell: |
+        set -o pipefail
+        awk -v up="$(cut -d' ' -f1 /proc/uptime)" -v disks="$DISKS" '
+          BEGIN { n = split(disks, d, " "); for (i = 1; i <= n; i++) want[d[i]] = 1 }
+          ($3 in want) { gb = $10 * 512 / 1e9; days = up / 86400
+            printf "%s: %.1f GB written in %.1f days since boot = %.1f GB/day\n", $3, gb, days, gb / days }
+        ' /proc/diskstats
+      environment:
+        DISKS: "{{ disk_paths.stdout_lines | select('search', ' disk$') | map('split') | map('first') | map('basename') | join(' ') }}"
+      args:
+        executable: /bin/bash
+      register: write_rate
+      changed_when: false
+
+    - name: Show the disks, their signatures and write rates
+      ansible.builtin.debug:
+        msg: "{{ disks.stdout_lines + [''] + signatures.stdout_lines + [''] + write_rate.stdout_lines }}"
+
+    # The last JSON document is the answer (a USB disk may have been asked twice).
+    # ATA disks: reallocated (5), pending (197) and uncorrectable (198) sectors should be 0.
+    # NVMe: percentage_used is the wear estimate, media_errors should be 0.
+    - name: Show each disk's health
+      ansible.builtin.debug:
+        msg:
+          model: "{{ j.model_name | default(j.model_family | default('?')) }}"
+          serial: "{{ j.serial_number | default('?') }}"
+          size_gb: "{{ ((j.user_capacity.bytes | default(0)) / 1e9) | round | int }}"
+          health: "{{ j.smart_status.passed | default('unknown') }}"
+          hours_on: "{{ j.power_on_time.hours | default('?') }}"
+          temperature_c: "{{ j.temperature.current | default('?') }}"
+          # Everything ever written: NVMe counts units of 512,000 bytes; ATA disks LBAs (512 bytes) in attribute 241.
+          written_total_tb: >-
+            {{ ((nvme.data_units_written | default(0) * 512000 / 1e12) | round(2)) if nvme
+               else (((ata[241] * 512 / 1e12) | round(2)) if 241 in ata else 'n/a') }}
+          ata_bad_sectors: "{{ ata | dict2items | selectattr('key', 'in', [5, 197, 198]) | items2dict if ata else 'n/a' }}"
+          nvme: "{{ nvme | dict2items | selectattr('key', 'in', nvme_keys) | items2dict if nvme else 'n/a' }}"
+          smartctl_messages: "{{ j.smartctl.messages | default([]) | map(attribute='string') | list }}"
+      vars:
+        j: "{{ item.stdout_lines | select('match', '^\\{') | last | default('{}') | from_json }}"
+        ata_table: "{{ j.ata_smart_attributes.table | default([]) }}"
+        ata: "{{ dict(ata_table | map(attribute='id') | zip(ata_table | map(attribute='raw.value'))) }}"
+        nvme: "{{ j.nvme_smart_health_information_log | default({}) }}"
+        nvme_keys: [percentage_used, media_errors, critical_warning]
+      loop: "{{ smart.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # Proxmox counts what each guest has written to disk since the guest started ("diskwrite").
+    - name: Read how much each guest has written since it started
+      ansible.builtin.command: pvesh get /nodes/{{ inventory_hostname }}/lxc --output-format json
+      register: guest_io
+      changed_when: false
+
+    - name: Show the guests, heaviest writers first
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.name }}: {{ (item.diskwrite / 1e9) | round(1) }} GB in {{ (item.uptime / 86400) | round(1) }} days
+          = {{ (item.diskwrite / 1e9 / ([item.uptime, 1] | max / 86400)) | round(1) }} GB/day
+      loop: "{{ guest_io.stdout | from_json | selectattr('status', 'eq', 'running') | sort(attribute='diskwrite', reverse=true) }}"
+      loop_control:
+        label: "{{ item.vmid }}"
+
+    # Inside each running guest that has Docker: what each container has read and written since it started.
+    - name: Read the disk use of every Docker container in the running guests
+      ansible.builtin.shell: |
+        set -o pipefail
+        for id in $(pct list | awk 'NR > 1 && $2 == "running" {print $1}'); do
+          pct exec "$id" -- sh -c 'command -v docker >/dev/null' 2>/dev/null || continue
+          echo "== $id $(pct list | awk -v id="$id" '$1 == id {print $NF}')"
+          pct exec "$id" -- docker stats --no-stream --format "$STATS"
+        done
+      args:
+        executable: /bin/bash
+      environment:
+        STATS: "{{ '{{' }}.Name{{ '}}' }}|read/written: {{ '{{' }}.BlockIO{{ '}}' }}"
+      register: container_io
+      changed_when: false
+
+    - name: Show the containers' disk use (since each container started)
+      ansible.builtin.debug:
+        msg: "{{ container_io.stdout_lines }}"
+
+    - name: Read the Proxmox storages and how full they are
+      ansible.builtin.command: pvesm status
+      register: storages
+      changed_when: false
+
+    - name: List the backup storage (sizes, dates) and look for Research Cruise or SQL Server files on it
+      ansible.builtin.shell: |
+        set -o pipefail
+        cd /mnt/pve/backup || exit 0
+        echo "== folders"; du -sh -- * 2>/dev/null
+        echo "== guest backups (vzdump)"; ls -lh --time-style=long-iso dump 2>/dev/null | grep -vE '\.(log|notes)$' | tail -n +2
+        echo "== names with cruise, or SQL Server backup/data files"
+        find . \( -iname '*cruise*' -o -iname '*.bak' -o -iname '*.bacpac' -o -iname '*.mdf' -o -iname '*.ldf' \) \
+          -exec ls -lh --time-style=long-iso {} + 2>/dev/null
+        echo "== other files outside dump/"
+        find . -path ./dump -prune -o -path ./lost+found -prune -o -type f -exec ls -lh --time-style=long-iso {} + 2>/dev/null | head -40
+      args:
+        executable: /bin/bash
+      register: backup_contents
+      changed_when: false
+
+    - name: Show the storages and the backup contents
+      ansible.builtin.debug:
+        msg: "{{ storages.stdout_lines + [''] + backup_contents.stdout_lines }}"
+
+# --- Temporary: the Research Cruise database on the old guest externum (on torus, not in the inventory) ---
+
+- name: Research Cruise database on externum
+  hosts: torus
+  gather_facts: false
+  vars:
+    volume: /var/lib/docker/volumes/researchcruiseapp-db/_data
+  tasks:
+    - name: Find externum's guest ID
+      ansible.builtin.shell: |
+        set -o pipefail
+        pct list | awk '$NF == "externum" {print $1}'
+      args:
+        executable: /bin/bash
+      register: externum
+      changed_when: false
+      failed_when: externum.stdout | length == 0
+
+    # Names, images and states only: environment variables (passwords) are never printed.
+    - name: Look at the Research Cruise containers, the database files, SQL Server's version and backup files
+      ansible.builtin.shell: |
+        set -o pipefail
+        g() { pct exec {{ externum.stdout }} -- "$@"; }
+        echo "== containers"; g docker ps -a --filter name=researchcruiseapp --format "$FMT"
+        echo "== database volume"; g du -sh {{ volume }}
+        g sh -c 'cd {{ volume }} && find . -type f \( -name "*.mdf" -o -name "*.ldf" -o -name "*.ndf" -o -name "*.bak" \) -exec ls -l {} +'
+        echo "== SQL Server version (start of its log)"
+        g sh -c 'head -c 1200 {{ volume }}/log/errorlog | tr -d "\000" | head -n 3'
+        echo "== SQL Server backup files or cruise files elsewhere in externum"
+        g sh -c 'find / -xdev \( -iname "*.bak" -o -iname "*.bacpac" -o -iname "*cruise*" \) 2>/dev/null \
+          | grep -vE "^/(proc|sys)|/var/lib/docker/(overlay2|image|containers)/" | head -40'
+        echo "== Komodo backup/restore stacks (file names only)"
+        g sh -c 'ls -la /etc/komodo/stacks/xbackup-cruisedb /etc/komodo/stacks/xrestore-cruisedb 2>&1'
+      args:
+        executable: /bin/bash
+      environment:
+        FMT: "{{ '{{' }}.Names{{ '}}' }}  {{ '{{' }}.Image{{ '}}' }}  {{ '{{' }}.Status{{ '}}' }}"
+      register: cruise
+      changed_when: false
+
+    - name: Show what was found
+      ansible.builtin.debug:
+        msg: "{{ cruise.stdout_lines }}"

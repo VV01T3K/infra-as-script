@@ -67,6 +67,16 @@ usage = 'arg "[ansible_args]..." help="Extra ansible-playbook options, e.g. --ta
 run = 'eval "scripts/with-fleet-key.sh scripts/with-service-secrets.sh ansible-playbook stages/5-services/main.yml ${usage_ansible_args:-}"'
 raw = true # interactive: two YubiKey touches (fleet key, service secrets)
 
+[tasks.inspect-storage]
+description = "Read only: disks, their health and the backup storage on the Proxmox machines (plus Research Cruise's database)"
+run = "scripts/with-fleet-key.sh ansible-playbook operations/inspect-storage.yml"
+raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
+
+[tasks.research-cruise-backup]
+description = "Back up Research Cruise's live database (on externum) to both backup disks and prove it by a test restore on zoltan"
+run = "scripts/with-fleet-key.sh ansible-playbook operations/research-cruise-backup.yml"
+raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
+
 [tasks.network]
 description = "The router: networks, firewall, switch ports, fixed addresses (shows the plan, asks, then applies)"
 run = "scripts/with-tofu-secrets.sh sh -c 'tofu -chdir=network init -input=false > /dev/null && tofu -chdir=network apply'"

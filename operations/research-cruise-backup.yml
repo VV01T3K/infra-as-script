@@ -1,0 +1,264 @@
+# Research Cruise: a real SQL Server backup of the live database, kept on both backup disks, and proven by
+# restoring it into a throwaway SQL Server.
+# Run: mise run research-cruise-backup
+#
+# What it does, where:
+#   externum (old guest on torus) counts the rows of every table, then makes a COPY_ONLY backup: reading only,
+#     the database and its own backup history stay as they are. The file goes to torus's storage "backup"
+#     (research-cruise/) and leaves externum again.
+#   kestrel gets a second copy on its storage "backup" (research-cruise/), checksum compared.
+#   zoltan restores it into a temporary SQL Server of the same version, without any network (no app, no mail),
+#     checks it (DBCC CHECKDB) and compares the row counts; then the temporary server and its files are deleted.
+# The backup passes through build/ on this computer (ignored by git) and is deleted there at the end.
+# Passwords: the live one is used inside its container only; the temporary one is random and thrown away.
+
+# Facts shared by the later plays live on torus (hostvars.torus); local steps are delegated to this computer.
+- name: Name the backup
+  hosts: torus
+  gather_facts: false
+  vars:
+    repo: "{{ playbook_dir | dirname }}"
+  tasks:
+    - name: Pick the file name (UTC time), a local folder for the copy in transit, and the row-count query
+      ansible.builtin.set_fact:
+        bak: ResearchCruiseApp-{{ now(utc=true, fmt='%Y%m%d-%H%M') }}Z.bak
+        transit: "{{ repo }}/build/research-cruise"
+        # One line per table: schema.table|rows (used on the live and on the restored database).
+        row_counts: >-
+          SELECT s.name + '.' + t.name, SUM(p.rows) FROM [ResearchCruiseApp].sys.tables t
+          JOIN [ResearchCruiseApp].sys.schemas s ON s.schema_id = t.schema_id
+          JOIN [ResearchCruiseApp].sys.partitions p ON p.object_id = t.object_id AND p.index_id IN (0, 1)
+          GROUP BY s.name, t.name ORDER BY 1;
+
+    # Emptied first, in case an interrupted run left a copy behind.
+    - name: Create an empty local folder
+      ansible.builtin.file:
+        path: "{{ transit }}"
+        state: "{{ item }}"
+        mode: "0700"
+      loop: [absent, directory]
+      delegate_to: localhost
+
+- name: Back up the live database (externum on torus)
+  hosts: torus
+  gather_facts: false
+  vars:
+    bak: "{{ hostvars.torus.bak }}"
+    volume: /var/lib/docker/volumes/researchcruiseapp-db/_data
+    # Runs one query in the database container; the sa password comes from that container's own settings.
+    sql: >-
+      sql() { pct exec "$GUEST" -- docker exec researchcruiseapp-db sh -c
+      'exec /opt/mssql-tools18/bin/sqlcmd -S 127.0.0.1 -U sa -P "${MSSQL_SA_PASSWORD:-$SA_PASSWORD}" -C -b -h -1 -W -s "|" -Q "$0"'
+      "SET NOCOUNT ON; $1"; }
+  tasks:
+    - name: Find externum's guest ID
+      ansible.builtin.shell: |
+        set -o pipefail
+        pct list | awk '$NF == "externum" {print $1}'
+      args:
+        executable: /bin/bash
+      register: externum
+      changed_when: false
+      failed_when: externum.stdout | length == 0
+
+    # Counted right before the backup; the staging app may still write in between (then the comparison
+    # at the end shows which table differs, and a re-run settles it).
+    - name: Count the rows of every table, then back up (COPY_ONLY, with checksums) and verify the file
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {{ sql }}
+        counts="$(sql "{{ hostvars.torus.row_counts }}")"
+        pct exec "$GUEST" -- docker exec researchcruiseapp-db mkdir -p /var/opt/mssql/backup
+        sql "BACKUP DATABASE [ResearchCruiseApp] TO DISK = N'/var/opt/mssql/backup/{{ bak }}' WITH COPY_ONLY, CHECKSUM, INIT;" >&2
+        sql "RESTORE VERIFYONLY FROM DISK = N'/var/opt/mssql/backup/{{ bak }}' WITH CHECKSUM;" >&2
+        echo "$counts"
+      args:
+        executable: /bin/bash
+      environment:
+        GUEST: "{{ externum.stdout }}"
+      register: live_counts
+      changed_when: true
+
+    - name: Move the file out of externum to the storage "backup" (research-cruise/)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        mkdir -p /mnt/pve/backup/research-cruise
+        pct pull "$GUEST" "{{ volume }}/backup/{{ bak }}" "/mnt/pve/backup/research-cruise/{{ bak }}"
+        chmod 600 "/mnt/pve/backup/research-cruise/{{ bak }}"
+        pct exec "$GUEST" -- rm "{{ volume }}/backup/{{ bak }}"
+        sha256sum "/mnt/pve/backup/research-cruise/{{ bak }}" | cut -d' ' -f1
+      args:
+        executable: /bin/bash
+      environment:
+        GUEST: "{{ externum.stdout }}"
+      register: torus_copy
+      changed_when: true
+
+    - name: Bring it to this computer for the other copies
+      ansible.builtin.fetch:
+        src: /mnt/pve/backup/research-cruise/{{ bak }}
+        dest: "{{ hostvars.torus.transit }}/{{ bak }}"
+        flat: true
+
+- name: Keep a second copy on kestrel
+  hosts: kestrel
+  gather_facts: false
+  vars:
+    bak: "{{ hostvars.torus.bak }}"
+  tasks:
+    - name: Create research-cruise/ on the storage "backup"
+      ansible.builtin.file:
+        path: /mnt/pve/backup/research-cruise
+        state: directory
+        mode: "0700"
+
+    - name: Copy the backup there
+      ansible.builtin.copy:
+        src: "{{ hostvars.torus.transit }}/{{ bak }}"
+        dest: /mnt/pve/backup/research-cruise/{{ bak }}
+        mode: "0600"
+
+    - name: Check that it is identical to torus's copy
+      ansible.builtin.command: sha256sum /mnt/pve/backup/research-cruise/{{ bak }}
+      register: kestrel_sum
+      changed_when: false
+      failed_when: kestrel_sum.stdout.split()[0] != hostvars.torus.torus_copy.stdout_lines[-1]
+
+- name: Restore it into a throwaway SQL Server on zoltan
+  hosts: zoltan
+  gather_facts: false
+  vars:
+    bak: "{{ hostvars.torus.bak }}"
+    test_dir: /opt/research-cruise-restore-test
+    # The same version as the live server (SQL Server 2022 CU23), so the test says something about it.
+    image: mcr.microsoft.com/mssql/server:2022-CU23-ubuntu-22.04
+    # 127.0.0.1, not "localhost": without a network the name lookup fails inside the container (error 0x2AFA).
+    sql: >-
+      sql() { docker exec research-cruise-restore-test sh -c
+      'exec /opt/mssql-tools18/bin/sqlcmd -S 127.0.0.1 -U sa -P "$MSSQL_SA_PASSWORD" -C -b -h -1 -W -s "|" -Q "$0"'
+      "SET NOCOUNT ON; $1"; }
+  tasks:
+    # An interrupted run (Ctrl+C) skips the cleanup at the end, so it happens here as well.
+    - name: Remove a temporary server and folder left by an interrupted run
+      ansible.builtin.shell: |
+        docker rm --force --volumes research-cruise-restore-test >/dev/null 2>&1 && echo removed
+        for f in {{ test_dir }} {{ test_dir }}.env; do [ ! -e "$f" ] || { rm -rf "$f"; echo removed; }; done
+      register: leftovers
+      changed_when: "'removed' in leftovers.stdout"
+
+    - name: Create a temporary folder
+      ansible.builtin.file:
+        path: "{{ test_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy the backup into it
+      ansible.builtin.copy:
+        src: "{{ hostvars.torus.transit }}/{{ bak }}"
+        dest: "{{ test_dir }}/{{ bak }}"
+        mode: "0644" # readable by SQL Server's own user in the container
+
+    - name: Restore, check and count, then always remove the temporary server
+      block:
+        # Random password (letters, digits and a symbol, as SQL Server requires), never shown. It goes to
+        # the server through a root-only file, which is deleted with the temporary server.
+        - name: Write the temporary server's settings (random password)
+          ansible.builtin.copy:
+            dest: "{{ test_dir }}.env"
+            content: |
+              ACCEPT_EULA=Y
+              MSSQL_SA_PASSWORD={{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}-9a
+            mode: "0600"
+          no_log: true
+
+        - name: Start a temporary SQL Server without any network
+          ansible.builtin.command: >-
+            docker run --detach --name research-cruise-restore-test --network none --memory 3g
+            --env-file {{ test_dir }}.env -v {{ test_dir }}:/backup:ro {{ image }}
+          changed_when: true
+
+        # One loop inside zoltan (no reconnecting per try): up to 60 tries, 5 seconds apart. SQL Server usually
+        # answers within seconds; the last error is kept for the message below.
+        - name: Wait until it accepts queries (up to 5 minutes)
+          ansible.builtin.shell: |
+            {{ sql }}
+            for i in $(seq 60); do
+              if out="$(sql "SELECT 1;" 2>&1)"; then echo "ready after $i tries"; exit 0; fi
+              sleep 5
+            done
+            echo "$out"; exit 1
+          register: ready
+          changed_when: false
+          failed_when: false
+
+        - name: If it never got ready, show why
+          ansible.builtin.shell: |
+            echo "== last error from sqlcmd"; echo "$LAST_ERROR"
+            echo "== password set inside the container?"
+            docker exec research-cruise-restore-test sh -c '[ -n "$MSSQL_SA_PASSWORD" ] && echo yes || echo no'
+            echo "== container"; docker ps --all --filter name=research-cruise-restore-test --format "$FMT"
+            echo "== end of SQL Server's log"; docker logs --tail 15 research-cruise-restore-test 2>&1
+          environment:
+            FMT: "{{ '{{' }}.Status{{ '}}' }}"
+            LAST_ERROR: "{{ ready.stdout }}"
+          register: not_ready
+          changed_when: false
+          failed_when: true
+          when: ready.rc != 0
+
+        - name: Restore the backup, run DBCC CHECKDB and count the rows
+          ansible.builtin.shell: |
+            set -euo pipefail
+            {{ sql }}
+            sql "RESTORE DATABASE [ResearchCruiseApp] FROM DISK = N'/backup/{{ bak }}' WITH CHECKSUM, RECOVERY;" >&2
+            sql "DBCC CHECKDB ([ResearchCruiseApp]) WITH NO_INFOMSGS, ALL_ERRORMSGS;" >&2
+            echo "== backup"
+            sql "SELECT TOP 1 CONVERT(varchar(19), b.backup_finish_date, 120), b.software_major_version, b.software_build_version,
+                 b.database_version, CAST(b.backup_size / 1048576 AS int) FROM msdb.dbo.restorehistory r
+                 JOIN msdb.dbo.backupset b ON b.backup_set_id = r.backup_set_id ORDER BY r.restore_date DESC;"
+            echo "== counts"
+            sql "{{ hostvars.torus.row_counts }}"
+          register: restored
+          changed_when: false
+
+      always:
+        - name: Remove the temporary server and its files
+          ansible.builtin.shell: |
+            docker rm --force --volumes research-cruise-restore-test >/dev/null 2>&1 || true
+            rm -rf {{ test_dir }} {{ test_dir }}.env
+          changed_when: true
+
+    - name: Compare the restored row counts with the live ones
+      ansible.builtin.set_fact:
+        live: "{{ hostvars.torus.live_counts.stdout_lines | select | list }}"
+        restored_counts: "{{ restored.stdout_lines[restored.stdout_lines.index('== counts') + 1 :] | select | list }}"
+        backup_info: "{{ restored.stdout_lines[restored.stdout_lines.index('== backup') + 1].split('|') }}"
+
+    - name: Show the result
+      ansible.builtin.debug:
+        msg:
+          backup_file: "{{ bak }} (on torus and kestrel: /mnt/pve/backup/research-cruise/)"
+          sha256: "{{ hostvars.torus.torus_copy.stdout_lines[-1] }}"
+          finished: "{{ backup_info[0] }} (SQL Server's clock)"
+          made_by_sql_server: "{{ backup_info[1] }} build {{ backup_info[2] }}, database version {{ backup_info[3] }}"
+          size_mb: "{{ backup_info[4] }}"
+          dbcc_checkdb: no errors
+          tables: "{{ restored_counts | length }}"
+          rows_total: "{{ restored_counts | map('split', '|') | map('last') | map('int') | sum }}"
+          tables_with_other_counts_than_live: "{{ restored_counts | symmetric_difference(live) }}"
+
+    - name: Fail if the restored copy doesn't match the live counts
+      ansible.builtin.assert:
+        that: restored_counts | symmetric_difference(live) | length == 0
+        fail_msg: "Row counts differ (the app may have written in between): see above. Re-run to settle it."
+        quiet: true
+
+- name: Clean up this computer
+  hosts: torus
+  gather_facts: false
+  tasks:
+    - name: Delete the copy in transit
+      ansible.builtin.file:
+        path: "{{ transit }}"
+        state: absent
+      delegate_to: localhost
