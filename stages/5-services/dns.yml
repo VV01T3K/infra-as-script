@@ -48,7 +48,9 @@ dns_zones:
     records:
       - { name: dns1, type: A, value: "{{ hostvars.dns1.address }}" }
       - { name: dns2, type: A, value: "{{ hostvars.dns2.address }}" }
-      - { name: arcane, type: A, value: "{{ hostvars.arcane.address }}" }
+      - { name: zoltan, type: A, value: "{{ hostvars.zoltan.address }}" }
+      - { name: engi, type: A, value: "{{ hostvars.engi.address }}" }
+      - { name: arcane, type: A, value: "{{ hostvars[groups.arcane_manager | first].address }}" } # through Caddy
       - { name: kestrel, type: A, value: "{{ hostvars.kestrel.address }}" }
       - { name: torus, type: A, value: "{{ hostvars.torus.address }}" }
       - { name: proxmox.raw, type: A, value: 10.1.0.2 } # kestrel's web UI (old name, kept)

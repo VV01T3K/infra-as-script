@@ -52,8 +52,9 @@
       register: upgrade
       changed_when: "'Upgrading' in upgrade.stdout or 'Installing' in upgrade.stdout"
 
-    - name: Install Docker and its compose plugin
-      ansible.builtin.command: apk add --no-cache docker docker-cli-compose
+    # buildx: compose needs it to build images from a Dockerfile (e.g. Caddy's, stage 5).
+    - name: Install Docker and its compose and build plugins
+      ansible.builtin.command: apk add --no-cache docker docker-cli-compose docker-cli-buildx
       register: docker_packages
       changed_when: "'Installing' in docker_packages.stdout"
 

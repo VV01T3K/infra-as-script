@@ -1,7 +1,8 @@
-# Stage 5: the platform services: Arcane (manager + agents) and the DNS cluster (Technitium).
+# Stage 5: the platform services: Caddy (HTTPS proxy), Arcane (manager + agents) and the DNS cluster (Technitium).
 # Run: mise run services   (one part only: add e.g. --tags dns)
-# Needs: stage 4 done for the guests. Two YubiKey touches: the fleet key, then the service secrets.
-# Parts (tags): arcane, agents, dns. Apps come later from services/ through Arcane's GitOps.
+# Needs: stage 4 done for the guests, and cloudflare_api_token in secrets/services.sops.yaml.
+# Two YubiKey touches: the fleet key, then the service secrets.
+# Parts (tags): proxy, arcane, agents, dns. Apps come later from services/ through Arcane's GitOps.
 # Every API call runs inside the guest against 127.0.0.1, so no password crosses the network.
 
 - name: Prepare the service secrets
@@ -49,14 +50,92 @@
       ansible.builtin.include_tasks: tasks/save-secrets.yml
       when: new_secrets | length > 0
 
-# --- 1. Arcane manager ---
+# --- 1. Caddy: HTTPS for the services on its guest (first, because Arcane is reached through it) ---
+
+- name: Caddy (HTTPS proxy)
+  hosts: proxy
+  gather_facts: false
+  tags: [proxy]
+  vars_files: [versions.yml]
+  tasks:
+    - name: Require the Cloudflare token (for the certificates) in secrets/services.sops.yaml
+      ansible.builtin.assert:
+        that: service_secrets.cloudflare_api_token is defined
+        fail_msg: "cloudflare_api_token is missing from secrets/services.sops.yaml (see the handoff)."
+        quiet: true
+
+    - name: Deploy Caddy (the first run builds its image, a few minutes)
+      ansible.builtin.include_tasks: tasks/compose.yml
+      vars:
+        compose_name: caddy
+        compose_template: caddy.compose.yaml.j2
+        compose_files:
+          caddy.Dockerfile.j2: Dockerfile
+          Caddyfile.j2: Caddyfile
+
+# --- 2. Arcane manager ---
 
 - name: Arcane manager
-  hosts: arcane
+  hosts: arcane_manager
   gather_facts: false
   tags: [arcane]
   vars_files: [versions.yml]
+  vars:
+    old_guest: "{{ hostvars.arcane }}"
   tasks:
+    # Temporary (step 4 of the handoff): Arcane moves from the guest "arcane" to this one. Its data (settings,
+    # environments, agent keys) is copied once, before Arcane first starts here; the encryption key stays the
+    # same. The old Arcane is stopped first and stays stopped, kept for going back. Remove with that guest.
+    # The marker file is written only after the copy checked out identical; until then a re-run starts over.
+    - name: Check whether Arcane's data was moved here already
+      ansible.builtin.stat:
+        path: /opt/arcane/.moved-from-arcane
+      register: arcane_moved
+
+    - name: Move Arcane's data from the guest "arcane"
+      when: not arcane_moved.stat.exists
+      delegate_to: "{{ node }}"
+      block:
+        - name: Require both guests on the same machine
+          ansible.builtin.assert:
+            that: old_guest.node == node
+            fail_msg: "The guest arcane is on {{ old_guest.node }}, this one on {{ node }}: copy by hand."
+            quiet: true
+
+        # Runs on the Proxmox machine, from one guest's volume straight into the other's (pct exec on both).
+        # Arcane has never run here yet, so a volume left by an interrupted copy is replaced.
+        - name: Stop the old Arcane and copy its data and projects here
+          ansible.builtin.shell: |
+            set -euo pipefail
+            vol=/var/lib/docker/volumes/arcane_data/_data
+            pct exec {{ old_guest.vmid }} -- docker stop arcane
+            pct exec {{ vmid }} -- sh -c 'docker volume rm -f arcane_data && docker volume create \
+              --label com.docker.compose.project=arcane --label com.docker.compose.volume=data arcane_data'
+            pct exec {{ old_guest.vmid }} -- tar -C "$vol" -cf - . | pct exec {{ vmid }} -- tar -C "$vol" -xf -
+            pct exec {{ vmid }} -- sh -c 'rm -rf /opt/arcane/projects && mkdir -p /opt/arcane/projects'
+            pct exec {{ old_guest.vmid }} -- tar -C /opt/arcane/projects -cf - . \
+              | pct exec {{ vmid }} -- tar -C /opt/arcane/projects -xf -
+          args:
+            executable: /bin/bash
+          changed_when: true
+
+        - name: Check that the copy is identical (checksums of every file), then mark the move done
+          ansible.builtin.shell: |
+            set -euo pipefail
+            sums() { pct exec "$1" -- sh -c 'for d in /var/lib/docker/volumes/arcane_data/_data /opt/arcane/projects; do
+              cd "$d" && find . -type f -exec sha256sum {} + | sed "s#^#$d #"; done | sort'; }
+            [ "$(sums {{ old_guest.vmid }})" = "$(sums {{ vmid }})" ] || { echo "The copy differs" >&2; exit 1; }
+            pct exec {{ vmid }} -- touch /opt/arcane/.moved-from-arcane
+            sums {{ vmid }} | wc -l
+          args:
+            executable: /bin/bash
+          register: arcane_copy
+          changed_when: true
+
+        - name: Show how many files were copied
+          ansible.builtin.debug:
+            msg: "{{ arcane_copy.stdout }} files copied, all identical."
+
     - name: Deploy Arcane
       ansible.builtin.include_tasks: tasks/compose.yml
       vars:
@@ -96,23 +175,24 @@
         body: { username: arcane, password: "{{ service_secrets.arcane_admin_password }}" }
       no_log: true
 
-# --- 2. Arcane agents: every guest except the manager's ---
+# --- 3. Arcane agents: every guest except the manager's (and the old manager guest "arcane") ---
 
 - name: Arcane agents
-  hosts: guests:!arcane
+  hosts: guests:!arcane_manager:!arcane
   gather_facts: false
   tags: [agents]
   vars_files: [versions.yml]
   vars:
     repo: "{{ playbook_dir | dirname | dirname }}"
     arcane_api: http://127.0.0.1:3552/api
+    manager: "{{ groups.arcane_manager | first }}"
   tasks:
     - name: Read Arcane's environments (hosts it manages)
       ansible.builtin.uri:
         url: "{{ arcane_api }}/environments"
         headers: { X-Api-Key: "{{ service_secrets.arcane_api_key }}" }
       register: environments
-      delegate_to: arcane
+      delegate_to: "{{ manager }}"
       run_once: true
       no_log: true
 
@@ -138,7 +218,7 @@
         status_code: [200, 204]
       loop: "{{ renew | select('in', existing) }}"
       changed_when: true
-      delegate_to: arcane
+      delegate_to: "{{ manager }}"
       run_once: true
       no_log: true
 
@@ -153,7 +233,7 @@
       loop: "{{ renew }}"
       register: created
       changed_when: true
-      delegate_to: arcane
+      delegate_to: "{{ manager }}"
       run_once: true
       no_log: true
 
@@ -176,7 +256,7 @@
         compose_name: arcane-agent
         compose_template: arcane-agent.compose.yaml.j2
 
-# --- 3. DNS cluster: dns1 creates it and holds the configuration, the others join ---
+# --- 4. DNS cluster: dns1 creates it and holds the configuration, the others join ---
 
 - name: DNS cluster (Technitium)
   hosts: dns

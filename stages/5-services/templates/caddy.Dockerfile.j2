@@ -1,0 +1,9 @@
+# Managed by stage 5 (infra-as-script): Caddy with routes from Docker labels and Cloudflare DNS certificates.
+FROM docker.io/library/caddy:{{ caddy_version }}-builder-alpine AS builder
+RUN xcaddy build \
+    --with github.com/lucaslorentz/caddy-docker-proxy/v2@{{ caddy_docker_proxy_version }} \
+    --with github.com/caddy-dns/cloudflare@{{ caddy_dns_cloudflare_version }}
+
+FROM docker.io/library/caddy:{{ caddy_version }}-alpine
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+CMD ["caddy", "docker-proxy"]

@@ -1,5 +1,6 @@
 # Deploys one Docker Compose project to /opt/<compose_name> in the guest and starts it.
-# Vars: compose_name, compose_template (in templates/), compose_dirs (optional extra folders).
+# Vars: compose_name, compose_template (in templates/), compose_dirs (optional extra folders),
+# compose_files (optional: other files next to it, {template: file name}).
 # The compose file holds secrets, so only root can read it.
 
 - name: Create the folders for {{ compose_name }}
@@ -16,10 +17,27 @@
     mode: "0600"
   no_log: true
 
+- name: Write the other files of {{ compose_name }}
+  ansible.builtin.template:
+    src: "{{ item.key }}"
+    dest: /opt/{{ compose_name }}/{{ item.value }}
+    mode: "0600"
+  loop: "{{ compose_files | default({}) | dict2items }}"
+  register: compose_extra
+
 # "up" changes only what differs from the file: new image, new settings, a stopped container.
+# Images with "build" are built when their tag is missing (a new version means a new tag).
 - name: Start or update {{ compose_name }}
   ansible.builtin.command:
     cmd: docker compose up --detach --remove-orphans --wait
     chdir: /opt/{{ compose_name }}
   register: compose_up
-  changed_when: compose_up.stderr is search('Pulled|Created|Recreated|Started|Removed')
+  changed_when: compose_up.stderr is search('Pulled|Built|Created|Recreated|Started|Removed')
+
+# Mounted files (e.g. a Caddyfile) aren't part of the compose file, so "up" doesn't see their changes.
+- name: Restart after a change to the other files of {{ compose_name }}
+  ansible.builtin.command:
+    cmd: docker compose restart
+    chdir: /opt/{{ compose_name }}
+  changed_when: true
+  when: compose_extra is changed and compose_up is not changed

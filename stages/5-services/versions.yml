@@ -1,3 +1,8 @@
 # Pinned image versions of the platform services. To update: change here, then `mise run services`.
 arcane_version: v2.14.0 # manager and agents, always the same version
 technitium_version: 15.6.0
+# Caddy is built with two extra modules (templates/caddy.Dockerfile.j2): routes from Docker labels,
+# and certificates through Cloudflare DNS. The image tag carries the versions, so a change here rebuilds it.
+caddy_version: 2.11.6
+caddy_docker_proxy_version: v2.13.1
+caddy_dns_cloudflare_version: v0.2.4

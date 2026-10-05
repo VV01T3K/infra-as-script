@@ -1,0 +1,33 @@
+# Managed by stage 5 (infra-as-script): Caddy, the HTTPS proxy in front of the services on this guest.
+# It reads its routes from the Docker labels of containers on the network "caddy" (see Caddyfile).
+services:
+  caddy:
+    image: local/caddy:{{ caddy_version }}-{{ caddy_docker_proxy_version }}-{{ caddy_dns_cloudflare_version }}
+    build: .
+    container_name: caddy
+    environment:
+      CADDY_INGRESS_NETWORKS: caddy
+      CADDY_DOCKER_CADDYFILE_PATH: /etc/caddy/Caddyfile
+      # Cloudflare token limited to editing DNS of the zone (for the certificate check records).
+      CF_API_TOKEN: {{ service_secrets.cloudflare_api_token | to_json }}
+      TZ: {{ locale.timezone }}
+    ports:
+      - "80:80" # only redirects to HTTPS
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    volumes:
+      # Read only: Caddy only looks at the containers' labels.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - data:/data # certificates
+      - config:/config
+    networks: [caddy]
+    restart: unless-stopped
+
+networks:
+  caddy:
+    name: caddy
+
+volumes:
+  data:
+  config:

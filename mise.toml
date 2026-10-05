@@ -20,13 +20,16 @@ SOPS_AGE_KEY = "AGE-PLUGIN-FIDO2-HMAC-1VE5KGMEJ945X6CTRM2TF76"
 # Python tools, Ansible collections, then the git hook that runs `mise run pre-commit` before every commit.
 postinstall = "uv sync --locked && ansible-galaxy collection install -r requirements.yml -p .collections && { [ -e .git/hooks/pre-commit ] || mise generate git-pre-commit --write; }"
 
+# Tasks that pass on extra options ("[ansible_args]...") run through eval: mise hands them over
+# shell-quoted, and only eval removes that quoting (otherwise -e x=1 arrives as 'x=1').
+
 [tasks.install]
 description = "Stage 0: install Proxmox on a machine (needs the Ventoy stick)"
 usage = '''
 arg "<machine>" help="Machine name from inventory/hosts.yml"
 arg "[ansible_args]..." help="Extra ansible-playbook options, e.g. --tags verify" var=#true
 '''
-run = "ansible-playbook stages/0-install/main.yml -e machine=${usage_machine} ${usage_ansible_args:-}"
+run = 'eval "ansible-playbook stages/0-install/main.yml -e machine=${usage_machine} ${usage_ansible_args:-}"'
 raw = true # interactive: it pauses for your input
 
 [tasks.access]
@@ -35,7 +38,7 @@ usage = '''
 arg "<machine>" help="Machine name from inventory/hosts.yml"
 arg "[ansible_args]..." help="Extra ansible-playbook options" var=#true
 '''
-run = "scripts/with-fleet-key.sh ansible-playbook stages/1-access/main.yml -e machine=${usage_machine} ${usage_ansible_args:-}"
+run = 'eval "scripts/with-fleet-key.sh ansible-playbook stages/1-access/main.yml -e machine=${usage_machine} ${usage_ansible_args:-}"'
 raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
 
 [tasks.host]
@@ -44,7 +47,7 @@ usage = '''
 arg "<machine>" help="Machine name from inventory/hosts.yml"
 arg "[ansible_args]..." help="Extra ansible-playbook options, e.g. --tags firewall" var=#true
 '''
-run = "scripts/with-fleet-key.sh ansible-playbook stages/2-host/main.yml -e machine=${usage_machine} ${usage_ansible_args:-}"
+run = 'eval "scripts/with-fleet-key.sh ansible-playbook stages/2-host/main.yml -e machine=${usage_machine} ${usage_ansible_args:-}"'
 raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
 
 [tasks.guests]
@@ -59,9 +62,9 @@ run = "scripts/with-fleet-key.sh ansible-playbook stages/4-setup/main.yml ${usag
 raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
 
 [tasks.services]
-description = "Stage 5: platform services (Arcane manager + agents, the DNS cluster)"
+description = "Stage 5: platform services (Caddy, Arcane manager + agents, the DNS cluster)"
 usage = 'arg "[ansible_args]..." help="Extra ansible-playbook options, e.g. --tags dns" var=#true'
-run = "scripts/with-fleet-key.sh scripts/with-service-secrets.sh ansible-playbook stages/5-services/main.yml ${usage_ansible_args:-}"
+run = 'eval "scripts/with-fleet-key.sh scripts/with-service-secrets.sh ansible-playbook stages/5-services/main.yml ${usage_ansible_args:-}"'
 raw = true # interactive: two YubiKey touches (fleet key, service secrets)
 
 [tasks.network]
