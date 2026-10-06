@@ -534,7 +534,8 @@
     # OMV marks modules as "pending" when its settings change (setup, SSH, network above); its web UI then asks
     # to apply them. Applying all pending ones is what the UI's checkmark does.
     - name: Check whether OpenMediaVault has pending changes
-      ansible.builtin.command: omv-rpc -u admin Config isDirty
+      ansible.builtin.command:
+        argv: [omv-rpc, -u, admin, Config, isDirty, '{}'] # {} = any module
       register: omv_dirty
       changed_when: false
 
