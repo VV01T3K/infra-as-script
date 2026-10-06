@@ -1,0 +1,222 @@
+# OpenMediaVault's data disk, shared folders, the user wojtek and SMB (included from main.yml, part "nas").
+# Everything except formatting goes through OMV's own API (omv-rpc), so the web UI shows it and OMV writes the
+# system files.
+# Formatting is a separate, explicit run: mise run services --tags nas -e format_nas_disk=<serial>
+# (deletes everything on that disk; only accepted for the serial in data_disk).
+
+- name: Read the disks of the VM
+  ansible.builtin.command: lsblk --json --paths --output NAME,SERIAL,TYPE,PTTYPE,FSTYPE,UUID
+  register: nas_disks
+  changed_when: false
+
+- name: Find the data disk and what is on it, by serial {{ data_disk }}
+  ansible.builtin.set_fact:
+    nas_disk: "{{ disk }}"
+    nas_filesystems: "{{ disk.children | default([]) | selectattr('fstype', 'eq', 'ext4') | list }}"
+    nas_contents: >-
+      {% for p in [disk] + disk.children | default([]) %}{{ p.name }}: {{ [p.pttype, p.fstype] | select | join(' ') or 'nothing recognised' }};
+      {% endfor %}
+  vars:
+    disk: "{{ (nas_disks.stdout | from_json).blockdevices | selectattr('serial', 'eq', data_disk) | first | default({}) }}"
+
+- name: Require the data disk in the VM
+  ansible.builtin.assert:
+    that: nas_disk.name is defined
+    fail_msg: "No disk with serial {{ data_disk }} in {{ inventory_hostname }} (USB mapping, VM kernel?)."
+    quiet: true
+
+- name: Stop unless the disk has its filesystem or formatting was asked for by its serial
+  ansible.builtin.fail:
+    msg: >-
+      Nothing was changed. {{ nas_disk.name }} (serial {{ data_disk }}) holds: {{ nas_contents | trim }}
+      Expected one ext4 partition. If the disk is new, or everything on it may be deleted:
+      mise run services --tags nas -e format_nas_disk={{ data_disk }}
+  when: nas_filesystems | length != 1 and format_nas_disk | default('') | string != data_disk
+
+# The same steps as OMV's "create file system" (one partition, ext4 with OMV's default options), run here in
+# the foreground so their output is kept: OMV's own background job left a partition without a file system once.
+# OMV's options initialise the whole disk now (lazy_*=0), which takes minutes on a 1 TB USB disk.
+- name: Delete everything on the data disk and create an ext4 file system (asked for by serial) on {{ nas_disk.name }}
+  ansible.builtin.shell: |
+    set -eu
+    if pgrep -x mkfs.ext4 > /dev/null || pgrep -x mke2fs > /dev/null; then
+      echo "A format is still running; try again later." >&2; exit 1
+    fi
+    wipefs --all "$DEV"
+    sgdisk --zap-all "$DEV"
+    sgdisk --new=1:0:0 --typecode=1:8300 --change-name=1:data "$DEV"
+    partprobe "$DEV"
+    udevadm settle
+    mkfs.ext4 -F -L data -b 4096 -m 0 -E lazy_itable_init=0,lazy_journal_init=0 -O quota "${DEV}1"
+  environment:
+    DEV: "{{ nas_disk.name }}"
+  async: 3600
+  poll: 15
+  register: nas_mkfs
+  changed_when: true
+  when: nas_filesystems | length != 1
+
+# lsblk reads udev's view of the disks, which can lag a moment behind a fresh mkfs.
+- name: Read the disk again after formatting (waits for the new file system to show)
+  ansible.builtin.shell: |
+    udevadm settle
+    lsblk --json --paths --output NAME,SERIAL,TYPE,PTTYPE,FSTYPE,UUID "$DEV"
+  environment:
+    DEV: "{{ nas_disk.name }}"
+  register: nas_disk_again
+  until: "'ext4' in nas_disk_again.stdout"
+  retries: 15
+  delay: 2
+  changed_when: false
+  failed_when: false
+  when: nas_mkfs is changed # noqa: no-handler (needed right here)
+
+- name: Stop if the file system didn't appear
+  ansible.builtin.fail:
+    msg: "No ext4 file system on {{ nas_disk.name }} after formatting. Output: {{ nas_mkfs.stdout | default('') }} {{ nas_mkfs.stderr | default('') }}"
+  when: nas_mkfs is changed and 'ext4' not in nas_disk_again.stdout | default('')
+
+- name: Remember the data file system
+  ansible.builtin.set_fact:
+    nas_fs: "{{ fs }}"
+  vars:
+    fresh: "{{ ((nas_disk_again.stdout | default('{\"blockdevices\": [{}]}') | from_json).blockdevices[0].children | default([])) }}"
+    fs: "{{ (fresh if nas_mkfs is changed else nas_filesystems) | selectattr('fstype', 'eq', 'ext4') | first | default({}) }}"
+  failed_when: nas_fs.uuid is not defined
+
+# --- Mount it (OMV's "mount" = an entry in its database; applying the changes mounts it) ---
+
+- name: Read OMV's mount points
+  ansible.builtin.command: omv-confdbadm read conf.system.filesystem.mountpoint
+  register: nas_mounts
+  changed_when: false
+
+- name: Mount the data file system through OMV
+  ansible.builtin.shell: |
+    set -e
+    omv-rpc -u admin FileSystemMgmt setMountPoint "$ARGS" > /dev/null
+    omv-rpc -u admin Config applyChanges '{"modules": [], "force": false}' > /dev/null
+  environment:
+    ARGS: "{{ {'id': nas_fs.uuid, 'comment': 'data (inventory: data_disk)'} | to_json }}"
+  changed_when: true
+  when: nas_mounts.stdout | from_json | selectattr('fsname', 'search', nas_fs.uuid) | list | length == 0
+
+- name: Read OMV's mount points, shared folders, users and SMB shares
+  ansible.builtin.command: "{{ item }}"
+  loop:
+    - omv-confdbadm read conf.system.filesystem.mountpoint
+    - omv-confdbadm read conf.system.sharedfolder
+    - omv-confdbadm read conf.system.usermngmnt.user
+    - >-
+      omv-rpc -u admin SMB getShareList '{"start": 0, "limit": -1}'
+    - omv-rpc -u admin SMB getSettings
+  register: nas_state
+  changed_when: false
+
+- name: Remember the mount point's ID
+  ansible.builtin.set_fact:
+    nas_mntent: "{{ nas_state.results[0].stdout | from_json | selectattr('fsname', 'search', nas_fs.uuid) | first }}"
+
+# --- The user wojtek (made once; its password is in secrets/services.sops.yaml) ---
+
+- name: Create the NAS user {{ nas_user }}
+  ansible.builtin.command:
+    argv: [omv-rpc, -u, admin, UserMgmt, setUser, "{{ user | to_json }}"]
+  vars:
+    user:
+      name: "{{ nas_user }}"
+      password: "{{ service_secrets.nas_user_password }}"
+      email: ""
+      groups: []
+      shell: /usr/sbin/nologin
+      sshpubkeys: []
+      disallowusermod: false
+      comment: Managed by stage 5 (infra-as-script)
+  changed_when: true
+  when: nas_user not in nas_state.results[2].stdout | from_json | map(attribute='name')
+  no_log: true
+
+# --- Shared folders on the data disk ---
+
+- name: Create the shared folders
+  ansible.builtin.command:
+    argv: [omv-rpc, -u, admin, ShareMgmt, set, "{{ folder | to_json }}"]
+  vars:
+    folder:
+      uuid: "{{ omv_new_uuid }}"
+      name: "{{ item.key }}"
+      reldirpath: "{{ item.key }}/"
+      comment: "{{ item.value.comment }}"
+      mntentref: "{{ nas_mntent.uuid }}"
+      mode: "{{ item.value.mode }}"
+  loop: "{{ nas_shares | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  changed_when: true
+  when: item.key not in nas_state.results[1].stdout | from_json | map(attribute='name')
+
+- name: Read the shared folders again
+  ansible.builtin.command: omv-confdbadm read conf.system.sharedfolder
+  register: nas_folders
+  changed_when: false
+
+# Compared as "type:name:perms" (7 = read/write).
+- name: Give each folder exactly its users (read/write)
+  ansible.builtin.command:
+    argv: [omv-rpc, -u, admin, ShareMgmt, setPrivileges, "{{ {'uuid': folder.uuid, 'privileges': privileges} | to_json }}"]
+  vars:
+    folder: "{{ nas_folders.stdout | from_json | selectattr('name', 'eq', item.key) | first }}"
+    # [{"type": "user", "perms": 7, "name": "<user>"}, ...], built as text then parsed.
+    privileges: >-
+      {{ ('[' ~ (item.value.users | default([]) | map('to_json')
+         | map('regex_replace', '^', '{"type": "user", "perms": 7, "name": ') | map('regex_replace', '$', '}')
+         | join(', ')) ~ ']') | from_json }}
+    wanted: "{{ item.value.users | default([]) | map('regex_replace', '^', 'user:') | map('regex_replace', '$', ':7') | sort }}"
+    current_list: "{{ folder.privileges.privilege | default([]) }}"
+    current: >-
+      {{ current_list | map(attribute='type') | zip(current_list | map(attribute='name'), current_list | map(attribute='perms') | map('string'))
+         | map('join', ':') | sort }}
+  loop: "{{ nas_shares | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  changed_when: true
+  when: current != wanted
+
+# --- SMB (Windows/macOS/Linux file sharing) for the folders marked smb ---
+
+- name: Turn on SMB
+  ansible.builtin.command:
+    argv: [omv-rpc, -u, admin, SMB, setSettings, "{{ (nas_state.results[4].stdout | from_json) | combine({'enable': true}) | to_json }}"]
+  changed_when: true
+  when: not (nas_state.results[4].stdout | from_json).enable | bool
+
+- name: Share the folders marked smb (only their users, no guests)
+  ansible.builtin.command:
+    argv: [omv-rpc, -u, admin, SMB, setShare, "{{ share | to_json }}"]
+  vars:
+    folder: "{{ nas_folders.stdout | from_json | selectattr('name', 'eq', item.key) | first }}"
+    share:
+      uuid: "{{ omv_new_uuid }}"
+      enable: true
+      sharedfolderref: "{{ folder.uuid }}"
+      comment: "{{ item.value.comment }}"
+      guest: "no"
+      readonly: false
+      browseable: true
+      recyclebin: false
+      recyclemaxsize: 0
+      recyclemaxage: 0
+      hidedotfiles: true
+      inheritacls: true
+      inheritpermissions: false
+      easupport: false
+      storedosattributes: false
+      hostsallow: ""
+      hostsdeny: ""
+      audit: false
+      extraoptions: ""
+  loop: "{{ nas_shares | dict2items | selectattr('value.smb', 'defined') | selectattr('value.smb') | list }}"
+  loop_control:
+    label: "{{ item.key }}"
+  changed_when: true
+  when: folder.uuid not in (nas_state.results[3].stdout | from_json).data | map(attribute='sharedfolderref')

@@ -35,6 +35,7 @@
           technitium_admin_password: "{{ password }}"
           nas_admin_password: "{{ password }}"
           nas_root_password: "{{ password }}" # console login of the VM nas (SSH takes keys only)
+          nas_user_password: "{{ password }}" # the NAS user (SMB login), see nas_user
           arcane_admin_password: "{{ password }}-{{ lookup('ansible.builtin.password', '/dev/null', length=4, chars=['digits']) }}"
           arcane_encryption_key: "{{ password }}"
           # Arcane accepts only keys of the form arc_<hex>.
@@ -362,6 +363,12 @@
     net: "{{ networks[network] }}"
     # OMV's ID for "a new object" in its configuration database (OMV_CONFIGOBJECT_NEW_UUID).
     omv_new_uuid: fa4b1c66-ef79-11e5-87a0-0002b3a176b4
+    # The NAS's own user (SMB login; password nas_user_password in secrets/services.sops.yaml).
+    nas_user: wojtek
+    # Shared folders on the data disk: mode of the folder, users with read/write access, smb = shared over SMB.
+    nas_shares:
+      pbs-store: { mode: "700", comment: "Proxmox Backup Server's backups (NFS for the VM pbs)" }
+      wojtek: { mode: "770", users: [wojtek], smb: true, comment: "wojtek's files" }
   tasks:
     - name: Check whether OpenMediaVault is installed
       ansible.builtin.command: dpkg-query --show --showformat=${Status} openmediavault
@@ -530,6 +537,9 @@
         name: admin
         password: "{{ service_secrets.nas_admin_password | password_hash('sha512', (inventory_hostname | hash('sha256'))[:16]) }}"
       no_log: true
+
+    - name: Data disk, shared folders, user and SMB
+      ansible.builtin.include_tasks: tasks/nas-storage.yml
 
     # OMV marks modules as "pending" when its settings change (setup, SSH, network above); its web UI then asks
     # to apply them. Applying all pending ones is what the UI's checkmark does.
