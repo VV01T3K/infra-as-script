@@ -50,6 +50,7 @@ dns_zones:
       - { name: dns2, type: A, value: "{{ hostvars.dns2.address }}" }
       - { name: zoltan, type: A, value: "{{ hostvars.zoltan.address }}" }
       - { name: engi, type: A, value: "{{ hostvars.engi.address }}" }
+      - { name: nas, type: A, value: "{{ hostvars.nas.address }}" } # OpenMediaVault
       - { name: arcane, type: A, value: "{{ hostvars[groups.arcane_manager | first].address }}" } # through Caddy
       - { name: kestrel, type: A, value: "{{ hostvars.kestrel.address }}" }
       - { name: torus, type: A, value: "{{ hostvars.torus.address }}" }

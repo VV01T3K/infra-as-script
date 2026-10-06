@@ -1,7 +1,7 @@
 # Stage 2: from "a fresh Proxmox I can log in to" to "a Proxmox host ready for guests".
 # Run: mise run host torus   (one part only: add e.g. --tags firewall)
 # Needs: stage 1 done for the machine. Safe to re-run: every step checks first and changes only what differs.
-# Parts (tags): packages, power, network, firewall, backup-disk, api-token.
+# Parts (tags): packages, power, network, firewall, backup-disk, vm-support, api-token.
 
 - name: Set up a Proxmox host on {{ machine }}
   hosts: "{{ machine }}"
@@ -421,36 +421,132 @@
                   ansible.builtin.command: pvesm set backup --content backup
                   changed_when: true
 
-    # --- 6. API token for stage 3 (OpenTofu), saved encrypted ---
-    # The user automation@pve has exactly the role "OpenTofu" on / and nothing else, and no password:
-    # it works only through its token. The token is created once (its secret is shown only then) and
-    # saved to secrets/<machine>.api.sops.yaml; the next `mise run guests` moves it into
-    # secrets/tofu.sops.yaml. To make a new one, remove it from there (and any saved file), then re-run.
+    # --- 6. VM support: what stage 3 needs to create VMs from cloud images and hand them USB devices ---
+    # The storage "local" also holds "import" files (cloud images to build VM disks from).
+    # USB mappings: Proxmox's named handles for host USB devices; a VM can use one with the Mapping.Use
+    # privilege instead of root. Each is found by its disk's serial (usb_mappings in inventory/hosts.yml).
+    # Exactly the listed mappings exist; others are removed.
+
+    - name: VM support
+      tags: [vm-support]
+      vars:
+        local_content: backup,import,iso,vztmpl
+      block:
+        - name: Read the storage "local"
+          ansible.builtin.command: pvesh get /storage/local --output-format json
+          register: local_storage
+          changed_when: false
+
+        - name: Let "local" hold cloud images to import ({{ local_content }})
+          ansible.builtin.command: pvesm set local --content {{ local_content }}
+          changed_when: true
+          when: (local_storage.stdout | from_json).content.split(',') | sort != local_content.split(',') | sort
+
+        - name: Read the disks and the existing USB mappings
+          ansible.builtin.command: "{{ item }}"
+          loop:
+            - lsblk --json --paths --nodeps --output NAME,SERIAL,TRAN
+            - pvesh get /cluster/mapping/usb --output-format json
+          register: usb_facts
+          changed_when: false
+
+        # A disk already handed to a VM is no longer visible here; its mapping is then kept as it is.
+        - name: Find the USB vendor:product ID of each mapped disk
+          ansible.builtin.shell: |
+            set -o pipefail
+            udevadm info --query=property --name="$DEV" | awk -F= '
+              $1 == "ID_USB_VENDOR_ID" { v = $2 } $1 == "ID_USB_MODEL_ID" { m = $2 } END { print v ":" m }'
+          args:
+            executable: /bin/bash
+          environment:
+            DEV: "{{ (disks | selectattr('serial', 'eq', item.value.disk_serial) | first).name }}"
+          loop: "{{ usb_mappings | default({}) | dict2items }}"
+          loop_control:
+            label: "{{ item.key }} (disk {{ item.value.disk_serial }})"
+          when: item.value.disk_serial in disks | map(attribute='serial')
+          register: usb_ids
+          changed_when: false
+          vars:
+            disks: "{{ (usb_facts.results[0].stdout | from_json).blockdevices }}"
+
+        - name: Require each mapped disk to be here or already mapped
+          ansible.builtin.assert:
+            that: item.item.key in existing
+            fail_msg: "Disk {{ item.item.value.disk_serial }} for USB mapping {{ item.item.key }} is not connected to {{ inventory_hostname }}."
+            quiet: true
+          loop: "{{ usb_ids.results | selectattr('skipped', 'defined') | list }}"
+          loop_control:
+            label: "{{ item.item.key }}"
+          vars:
+            existing: "{{ usb_facts.results[1].stdout | from_json | map(attribute='id') | list }}"
+
+        - name: Create or update the USB mappings
+          ansible.builtin.command: >-
+            pvesh {{ 'set' if exists else 'create' }} /cluster/mapping/usb{{ '/' ~ item.item.key if exists else '' }}
+            {{ '' if exists else '--id ' ~ item.item.key }} --map {{ wanted }}
+            --description "disk {{ item.item.value.disk_serial }} (inventory/hosts.yml)"
+          loop: "{{ usb_ids.results | rejectattr('skipped', 'defined') | list }}"
+          loop_control:
+            label: "{{ item.item.key }} = {{ item.stdout }}"
+          vars:
+            current: "{{ usb_facts.results[1].stdout | from_json | selectattr('id', 'eq', item.item.key) | list }}"
+            exists: "{{ current | length > 0 }}"
+            wanted: node={{ inventory_hostname }},id={{ item.stdout }}
+          # Compared field by field: Proxmox may keep "node=..." and "id=..." in another order.
+          when: not exists or (current[0].map | default(['']) | first).split(',') | sort != wanted.split(',') | sort
+          changed_when: true
+
+        - name: Remove the USB mappings that are not in the inventory
+          ansible.builtin.command: pvesh delete /cluster/mapping/usb/{{ item }}
+          loop: "{{ usb_facts.results[1].stdout | from_json | map(attribute='id') | difference(usb_mappings | default({}) | list) }}"
+          changed_when: true
+
+    # --- 7. API token for stage 3 (OpenTofu), saved encrypted ---
+    # The user automation@pve has exactly the grants in api_acls and nothing else, and no password: it works
+    # only through its token. The token is created once (its secret is shown only then) and saved to
+    # secrets/<machine>.api.sops.yaml; the next `mise run guests` moves it into secrets/tofu.sops.yaml.
+    # To make a new one, remove it from there (and any saved file), then re-run.
 
     - name: API token
       tags: [api-token]
       vars:
-        # Only what stage 3 needs to create and run guests. Add a privilege when stage 3 needs more.
-        api_privileges:
-          - VM.Allocate # create and delete guests
-          - VM.Audit # read guest settings and status
-          - VM.Clone # create guests from templates
-          - VM.Config.CDROM
-          - VM.Config.CPU
-          - VM.Config.Cloudinit
-          - VM.Config.Disk
-          - VM.Config.HWType
-          - VM.Config.Memory
-          - VM.Config.Network
-          - VM.Config.Options
-          - VM.GuestAgent.Audit # read guest IP addresses from the guest agent
-          - VM.PowerMgmt # start, stop, restart guests
-          - Datastore.AllocateSpace # create guest disks
-          - Datastore.AllocateTemplate # store downloaded images and container templates
-          - Datastore.Audit # read storages
-          - SDN.Use # connect guests to the bridge vmbr0
-          - Sys.Audit # read node status and tasks
-          - Sys.AccessNetwork # let Proxmox download images from the internet
+        # Only what stage 3 needs. Add a privilege when stage 3 needs more.
+        api_roles:
+          # On everything (/): create and run guests.
+          OpenTofu:
+            - VM.Allocate # create and delete guests
+            - VM.Audit # read guest settings and status
+            - VM.Clone # create guests from templates
+            - VM.Config.CDROM
+            - VM.Config.CPU
+            - VM.Config.Cloudinit
+            - VM.Config.Disk
+            - VM.Config.HWType
+            - VM.Config.Memory
+            - VM.Config.Network
+            - VM.Config.Options
+            - VM.GuestAgent.Audit # read guest IP addresses from the guest agent
+            - VM.PowerMgmt # start, stop, restart guests
+            - Datastore.AllocateSpace # create guest disks
+            - Datastore.AllocateTemplate # store downloaded images and container templates
+            - Datastore.Audit # read storages
+            - Mapping.Use # hand USB mappings (made in the part "VM support") to VMs
+            - SDN.Use # connect guests to the bridge vmbr0
+            - Sys.Audit # read node status and tasks
+            - Sys.AccessNetwork # let Proxmox download images from the internet
+          # Only on the storage "local": also delete images and templates it downloaded once they are replaced
+          # (Datastore.Allocate; it also allows changing that storage's settings, nothing on "backup" or elsewhere).
+          # A grant on a deeper path REPLACES the one inherited from / for that path (Proxmox doesn't add them up),
+          # so this role must repeat every datastore privilege OpenTofu needs on "local". (2026-10-06: with only
+          # Datastore.Allocate here, OpenTofu could no longer see the downloaded template and rebuilt all LXCs.)
+          OpenTofuLocalFiles:
+            - Datastore.Allocate # delete files
+            - Datastore.AllocateSpace
+            - Datastore.AllocateTemplate # download images and templates
+            - Datastore.Audit # list files
+        api_acls:
+          - { path: /, role: OpenTofu }
+          - { path: /storage/local, role: OpenTofuLocalFiles }
       block:
         - name: Read the Proxmox roles, users and permissions
           ansible.builtin.command: pvesh get /access/{{ item }} --output-format json
@@ -458,35 +554,40 @@
           register: access
           changed_when: false
 
-        - name: Compare with the wanted role, user and permission
+        # Grants compared as "path|role".
+        - name: Compare with the wanted roles, user and permissions
           ansible.builtin.set_fact:
-            role: "{{ access.results[0].stdout | from_json | selectattr('roleid', 'eq', 'OpenTofu') | first | default({}) }}"
-            wanted_privs: "{{ api_privileges | sort(case_sensitive=true) | join(',') }}"
+            current_roles: "{{ access.results[0].stdout | from_json | items2dict(key_name='roleid', value_name='privs') }}"
             user_exists: "{{ 'automation@pve' in access.results[1].stdout | from_json | map(attribute='userid') }}"
-            user_acl: "{{ access.results[2].stdout | from_json | selectattr('ugid', 'eq', 'automation@pve') | list }}"
+            current_grants: "{{ acl | map(attribute='path') | zip(acl | map(attribute='roleid')) | map('join', '|') | list }}"
+            wanted_grants: "{{ api_acls | map(attribute='path') | zip(api_acls | map(attribute='role')) | map('join', '|') | list }}"
+          vars:
+            acl: "{{ access.results[2].stdout | from_json | selectattr('ugid', 'eq', 'automation@pve') | list }}"
 
-        - name: Give the role "OpenTofu" exactly the privileges in api_privileges
-          ansible.builtin.command: pveum role {{ 'modify' if role else 'add' }} OpenTofu --privs {{ wanted_privs }}
+        - name: Give each role exactly its privileges in api_roles
+          ansible.builtin.command: pveum role {{ 'modify' if item.key in current_roles else 'add' }} {{ item.key }} --privs {{ wanted }}
+          vars:
+            wanted: "{{ item.value | sort(case_sensitive=true) | join(',') }}"
+          loop: "{{ api_roles | dict2items }}"
+          loop_control:
+            label: "{{ item.key }}"
           changed_when: true
-          when: role.privs | default('') != wanted_privs
+          when: current_roles[item.key] | default('') != wanted
 
         - name: Create the user automation@pve
           ansible.builtin.command: pveum user add automation@pve --comment "OpenTofu (stage 3), API token only"
           changed_when: true
           when: not user_exists
 
-        - name: Grant it the role "OpenTofu" on /
-          ansible.builtin.command: pveum acl modify / --users automation@pve --roles OpenTofu
+        - name: Grant it the roles in api_acls
+          ansible.builtin.command: pveum acl modify {{ item.split('|')[0] }} --users automation@pve --roles {{ item.split('|')[1] }}
+          loop: "{{ wanted_grants | difference(current_grants) }}"
           changed_when: true
-          when: user_acl | selectattr('path', 'eq', '/') | selectattr('roleid', 'eq', 'OpenTofu') | length == 0
 
         - name: Remove any other permission it has
-          ansible.builtin.command: pveum acl delete {{ item.path }} --users automation@pve --roles {{ item.roleid }}
+          ansible.builtin.command: pveum acl delete {{ item.split('|')[0] }} --users automation@pve --roles {{ item.split('|')[1] }}
+          loop: "{{ current_grants | difference(wanted_grants) }}"
           changed_when: true
-          loop: "{{ user_acl }}"
-          loop_control:
-            label: "{{ item.roleid }} on {{ item.path }}"
-          when: item.path != '/' or item.roleid != 'OpenTofu'
 
         # sops encrypts only the values, so the machine names under api_tokens are readable without a YubiKey.
         - name: Check for a saved API token

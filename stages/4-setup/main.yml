@@ -1,6 +1,6 @@
 # Stage 4: from "an empty Alpine guest" to "a guest ready for containers": Python, updates, Docker
-# (with memory accounting for its containers).
-# Run: mise run setup   (one guest only: mise run setup dns1)
+# (with memory accounting for its containers). VMs (Debian): updates.
+# Run: mise run setup   (one guest or VM only: mise run setup dns1)
 # Needs: stage 3 done (the guest exists and runs). Safe to re-run: every step checks first.
 # Ansible reaches each guest through its Proxmox machine (pct exec), see "guests" in inventory/hosts.yml.
 
@@ -26,7 +26,7 @@
       throttle: 1 # one machine at a time: they all write the same file
 
 - name: Set up the guests
-  hosts: "{{ guest | default('guests') }}"
+  hosts: "{{ guest | default('guests') }}:&guests"
   gather_facts: false
   tasks:
     # Alpine comes without Python, which every other Ansible step needs; "raw" runs a plain command.
@@ -115,3 +115,32 @@
     - name: Done
       ansible.builtin.debug:
         msg: "{{ inventory_hostname }} is ready for containers. Next: stage 5 (services)."
+
+# VMs run their own SSH server (keys from cloud-init, stage 3); the first login records the VM's host key.
+- name: Set up the VMs
+  hosts: "{{ guest | default('vms') }}:&vms"
+  gather_facts: false
+  tasks:
+    - name: Wait until the VM accepts SSH (a new VM needs a minute for cloud-init)
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Install all updates
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+
+    - name: Check whether the updates need a restart
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Restart the VM for its updates
+      ansible.builtin.reboot:
+        msg: Restart by stage 4 (infra-as-script) for updates
+      when: reboot_required.stat.exists
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is up to date. Next: stage 5 (services).

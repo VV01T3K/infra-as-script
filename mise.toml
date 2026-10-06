@@ -42,7 +42,7 @@ run = 'eval "scripts/with-fleet-key.sh ansible-playbook stages/1-access/main.yml
 raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
 
 [tasks.host]
-description = "Stage 2: set up Proxmox on a machine (packages, power, network, firewall, backup disk, API token)"
+description = "Stage 2: set up Proxmox on a machine (packages, power, network, firewall, backup disk, VM support, API token)"
 usage = '''
 arg "<machine>" help="Machine name from inventory/hosts.yml"
 arg "[ansible_args]..." help="Extra ansible-playbook options, e.g. --tags firewall" var=#true
@@ -51,18 +51,19 @@ run = 'eval "scripts/with-fleet-key.sh ansible-playbook stages/2-host/main.yml -
 raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
 
 [tasks.guests]
-description = "Stage 3: create the guests listed in inventory/hosts.yml (shows the plan, asks, then applies)"
-run = "scripts/with-tofu-secrets.sh sh -c 'tofu -chdir=stages/3-guests init -input=false > /dev/null && tofu -chdir=stages/3-guests apply'"
+description = "Stage 3: create the guests (LXCs) and VMs listed in inventory/hosts.yml (shows the plan, asks, then applies)"
+usage = 'arg "[tofu_args]..." help="Extra tofu plan options, e.g. -replace=..." var=#true'
+run = 'eval "scripts/with-tofu-secrets.sh scripts/tofu-apply.sh stages/3-guests ${usage_tofu_args:-}"'
 raw = true # interactive: YubiKey touch + PIN, then "yes" to apply
 
 [tasks.setup]
-description = "Stage 4: set up the guests (Python, updates, Docker)"
+description = "Stage 4: set up the guests (Python, updates, Docker) and VMs (updates, console password)"
 usage = 'arg "[guest]" help="One guest from inventory/hosts.yml (default: all guests)"'
 run = "scripts/with-fleet-key.sh ansible-playbook stages/4-setup/main.yml ${usage_guest:+-e guest=$usage_guest}"
 raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
 
 [tasks.services]
-description = "Stage 5: platform services (Caddy, Arcane manager + agents, the DNS cluster)"
+description = "Stage 5: platform services (Caddy, Arcane manager + agents, the DNS cluster, OpenMediaVault)"
 usage = 'arg "[ansible_args]..." help="Extra ansible-playbook options, e.g. --tags dns" var=#true'
 run = 'eval "scripts/with-fleet-key.sh scripts/with-service-secrets.sh ansible-playbook stages/5-services/main.yml ${usage_ansible_args:-}"'
 raw = true # interactive: two YubiKey touches (fleet key, service secrets)
@@ -79,7 +80,7 @@ raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
 
 [tasks.network]
 description = "The router: networks, firewall, switch ports, fixed addresses (shows the plan, asks, then applies)"
-run = "scripts/with-tofu-secrets.sh sh -c 'tofu -chdir=network init -input=false > /dev/null && tofu -chdir=network apply'"
+run = "scripts/with-tofu-secrets.sh scripts/tofu-apply.sh network"
 raw = true # interactive: YubiKey touch + PIN, then "yes" to apply
 
 [tasks.yubikey-ssh]
