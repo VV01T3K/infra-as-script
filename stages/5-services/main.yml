@@ -356,7 +356,7 @@
 # login "root" with nas_root_password (both in secrets/services.sops.yaml). The data disk (filesystem, shares) comes in a later step.
 
 - name: OpenMediaVault
-  hosts: vms
+  hosts: nas # only this VM (2026-10-06: "vms" also ran this on another VM)
   tags: [nas]
   vars:
     iface: "{{ ansible_facts.default_ipv4.interface }}"
@@ -367,7 +367,6 @@
     nas_user: wojtek
     # Shared folders on the data disk: mode of the folder, users with read/write access, smb = shared over SMB.
     nas_shares:
-      pbs-store: { mode: "700", comment: "Proxmox Backup Server's backups (NFS for the VM pbs)" }
       wojtek: { mode: "770", users: [wojtek], smb: true, comment: "wojtek's files" }
   tasks:
     - name: Check whether OpenMediaVault is installed

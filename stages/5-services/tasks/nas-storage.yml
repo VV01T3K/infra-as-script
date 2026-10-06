@@ -186,7 +186,10 @@
 
 - name: Turn on SMB
   ansible.builtin.command:
-    argv: [omv-rpc, -u, admin, SMB, setSettings, "{{ (nas_state.results[4].stdout | from_json) | combine({'enable': true}) | to_json }}"]
+    # The settings without the list of shares that getSettings also returns (OMV rejects a stale list).
+    argv: [omv-rpc, -u, admin, SMB, setSettings, "{{ settings | combine({'enable': true}) | to_json }}"]
+  vars:
+    settings: "{{ nas_state.results[4].stdout | from_json | dict2items | rejectattr('key', 'eq', 'shares') | items2dict }}"
   changed_when: true
   when: not (nas_state.results[4].stdout | from_json).enable | bool
 
