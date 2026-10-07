@@ -10,6 +10,11 @@ services:
       CADDY_DOCKER_CADDYFILE_PATH: /etc/caddy/Caddyfile
       # Cloudflare token limited to editing DNS of the zone (for the certificate check records).
       CF_API_TOKEN: {{ service_secrets.cloudflare_api_token | to_json }}
+{% if caddy_security_enabled | default(false) | bool %}
+      VALKEY_PASSWORD: {{ service_secrets.valkey_password | to_json }}
+      VALKEY_ENCRYPTION_KEY: {{ service_secrets.valkey_encryption_key | to_json }}
+      CROWDSEC_API_KEY: {{ service_secrets.crowdsec_api_key | to_json }}
+{% endif %}
       TZ: {{ locale.timezone }}
     ports:
       - "80:80" # only redirects to HTTPS
@@ -22,12 +27,17 @@ services:
       - ./backends:/etc/caddy/backends:ro # routes to other guests' web UIs (end of stage 5)
       - data:/data # certificates
       - config:/config
-    networks: [caddy]
+    networks: {{ '[caddy, security]' if caddy_security_enabled | default(false) | bool else '[caddy]' }}
     restart: unless-stopped
 
 networks:
   caddy:
     name: caddy
+{% if caddy_security_enabled | default(false) | bool %}
+  security:
+    external: true
+    name: caddy_security
+{% endif %}
 
 volumes:
   data:

@@ -85,6 +85,12 @@ description = "Copy certificate storage and CrowdSec into isolated GitOps replac
 run = "scripts/with-fleet-key.sh scripts/with-service-secrets.sh ansible-playbook operations/prepare-proxy-security.yml"
 raw = true
 
+[tasks.integrate-proxy-security]
+description = "Test a private Caddy candidate and integrate restored Redis certificates and CrowdSec with rollback"
+usage = 'arg "[ansible_args]..." help="Extra options, e.g. -e security_prepare_only=true" var=#true'
+run = 'eval "scripts/with-fleet-key.sh scripts/with-service-secrets.sh ansible-playbook operations/integrate-proxy-security.yml ${usage_ansible_args:-}"'
+raw = true
+
 [tasks.inspect-storage]
 description = "Read only: disks, their health and the backup storage on the Proxmox machines (plus Research Cruise's database)"
 run = "scripts/with-fleet-key.sh ansible-playbook operations/inspect-storage.yml"

@@ -78,6 +78,13 @@
         fail_msg: "cloudflare_api_token is missing from secrets/services.sops.yaml (see the handoff)."
         quiet: true
 
+    - name: Read the verified proxy-security activation state
+      ansible.builtin.include_tasks: tasks/proxy-security-state.yml
+
+    - name: Require restored certificate storage and CrowdSec before integration
+      ansible.builtin.include_tasks: tasks/proxy-security-preflight.yml
+      when: caddy_security_enabled | default(false) | bool
+
     - name: Deploy Caddy (the first run builds its image, a few minutes)
       ansible.builtin.include_tasks: tasks/compose.yml
       vars:
@@ -853,6 +860,9 @@
       pdm: { host: pdm, port: 8443, cert: /etc/proxmox-datacenter-manager/auth/api.pem }
       omv: { host: nas, port: 443, cert: omv }
   tasks:
+    - name: Preserve protection when updating only backend routes
+      ansible.builtin.include_tasks: tasks/proxy-security-state.yml
+
     - name: Find OMV's web UI certificate
       ansible.builtin.command: omv-rpc -u admin WebGui getSettings
       delegate_to: nas
@@ -886,6 +896,9 @@
         caddy_file: |
           # Managed by stage 5 (infra-as-script): {{ item.0.item.key }}.{{ domain }} -> {{ item.0.item.value.host }}:{{ item.0.item.value.port }}
           {{ item.0.item.key }}.{{ domain }} {
+          {% if caddy_security_enabled | default(false) | bool %}
+            import protected
+          {% endif %}
           	reverse_proxy https://{{ hostvars[item.0.item.value.host].address }}:{{ item.0.item.value.port }} {
           		transport http {
           			tls_server_name {{ server_name }}

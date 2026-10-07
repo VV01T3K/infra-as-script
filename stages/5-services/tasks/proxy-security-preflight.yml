@@ -1,0 +1,21 @@
+- name: Require preserved certificate encryption and bouncer credentials
+  ansible.builtin.assert:
+    that:
+      - service_secrets.valkey_password | default('') | length > 0
+      - service_secrets.valkey_encryption_key | default('') | length >= 32
+      - service_secrets.crowdsec_api_key | default('') | length > 0
+    quiet: true
+  no_log: true
+
+- name: Require both isolated security services to be healthy
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import json, subprocess
+        containers = json.loads(subprocess.check_output(['docker', 'inspect', 'valkey', 'crowdsec'], text=True))
+        for container in containers:
+            assert container['State']['Running'] and container['State']['Health']['Status'] == 'healthy'
+            assert not any(container['NetworkSettings']['Ports'].values()), 'Unexpected published port'
+  changed_when: false

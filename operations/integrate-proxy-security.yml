@@ -1,0 +1,395 @@
+# Caddy bootstrap stays independent of the application GitOps projects.
+# Run after preparation. -e security_prepare_only=true builds/imports without a cutover.
+- name: Integrate restored certificate storage and CrowdSec with Caddy
+  hosts: zoltan
+  gather_facts: false
+  vars_files: [../stages/5-services/versions.yml]
+  vars:
+    repo: "{{ playbook_dir | dirname }}"
+    caddy_security_enabled: true
+    security_candidate: /opt/caddy-security-candidate
+    security_image: >-
+      local/caddy:{{ caddy_version }}-{{ caddy_docker_proxy_version }}-{{ caddy_dns_cloudflare_version }}-{{ caddy_redis_version }}-{{ caddy_crowdsec_version }}
+  tasks:
+    - name: Find the original proxy guest for its preserved encryption key
+      ansible.builtin.shell: |
+        set -o pipefail
+        pct list | awk '$NF == "externum" && $2 == "running" {print $1}'
+      args:
+        executable: /bin/bash
+      delegate_to: torus
+      register: security_original_guest
+      changed_when: false
+      failed_when: security_original_guest.stdout_lines | length != 1
+
+    - name: Read preserved proxy settings privately
+      ansible.builtin.command:
+        argv: [pct, exec, "{{ security_original_guest.stdout }}", '--', docker, inspect, caddy]
+      delegate_to: torus
+      register: security_original_caddy
+      changed_when: false
+      no_log: true
+
+    - name: Combine unlocked service secrets with the original proxy settings
+      ansible.builtin.set_fact:
+        service_secrets: >-
+          {{ lookup('ansible.builtin.env', 'SERVICE_SECRETS') | default('{}', true) | from_json
+             | combine({'valkey_password': original.VALKEY_PASSWORD,
+                        'valkey_encryption_key': original.VALKEY_ENCRYPTION_KEY,
+                        'crowdsec_api_key': original.CROWDSEC_API_KEY}) }}
+      vars:
+        original: "{{ dict((security_original_caddy.stdout | from_json)[0].Config.Env | map('split', '=', 1)) }}"
+      no_log: true
+
+    - name: Require both restored services and their credentials
+      ansible.builtin.include_tasks: ../stages/5-services/tasks/proxy-security-preflight.yml
+
+    - name: Remember whether proxy protection was already activated
+      ansible.builtin.stat:
+        path: /opt/caddy/security-enabled
+      register: security_marker_before
+      tags: [security-cutover]
+
+    - name: Refuse importing old filesystem assets after activation
+      ansible.builtin.assert:
+        that: not security_marker_before.stat.exists
+        fail_msg: Proxy security is already active. Use the normal proxy bootstrap for subsequent updates.
+        quiet: true
+      tags: [security-cutover]
+
+    - name: Read the verified preparation backup directory
+      ansible.builtin.slurp:
+        src: /root/proxy-security-backup
+      register: security_backup_marker
+
+    - name: Select the existing backup directory
+      ansible.builtin.set_fact:
+        security_backup: "{{ security_backup_marker.content | b64decode | trim }}"
+
+    - name: Validate the backup path before using it
+      ansible.builtin.assert:
+        that: security_backup is match('^/mnt/pve/backup/proxy-security/[0-9]{8}T[0-9]{6}Z$')
+        quiet: true
+
+    - name: Create protected candidate and transit directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0700'
+      loop: ["{{ security_candidate }}", "{{ security_candidate }}/backends", /root/caddy-security-transit]
+
+    - name: Preserve the original bootstrap for rollback before writing candidates
+      ansible.builtin.shell: |
+        set -eu
+        if [ ! -f /root/caddy-security-transit/caddy-bootstrap.tar ]; then
+          umask 077
+          tar -C /opt/caddy -cf /root/caddy-security-transit/caddy-bootstrap.tar .
+        fi
+      changed_when: true
+
+    - name: Fetch the protected bootstrap archive for the two-host backup
+      ansible.builtin.fetch:
+        src: /root/caddy-security-transit/caddy-bootstrap.tar
+        dest: "{{ repo }}/build/caddy-security/caddy-bootstrap.tar"
+        flat: true
+      no_log: true
+
+    - name: Save the rollback archive on both backup disks
+      ansible.builtin.copy:
+        src: "{{ repo }}/build/caddy-security/caddy-bootstrap.tar"
+        dest: "{{ security_backup }}/caddy-bootstrap.tar"
+        mode: '0600'
+      delegate_to: "{{ item }}"
+      loop: [torus, kestrel]
+      no_log: true
+
+    - name: Remove the local bootstrap transit copy
+      ansible.builtin.file:
+        path: "{{ repo }}/build/caddy-security"
+        state: absent
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: Render the protected candidate bootstrap
+      ansible.builtin.template:
+        src: "{{ repo }}/stages/5-services/templates/{{ item.source }}"
+        dest: "{{ security_candidate }}/{{ item.target }}"
+        mode: '0600'
+      loop:
+        - { source: caddy.compose.yaml.j2, target: compose.yaml }
+        - { source: caddy.Dockerfile.j2, target: Dockerfile }
+        - { source: Caddyfile.j2, target: Caddyfile }
+      no_log: true
+
+    - name: Copy the existing pinned backend routes into the candidate
+      ansible.builtin.copy:
+        src: /opt/caddy/backends/
+        dest: "{{ security_candidate }}/backends/"
+        remote_src: true
+        mode: preserve
+
+    - name: Add protection to the retained backend sites
+      ansible.builtin.lineinfile:
+        path: "{{ security_candidate }}/backends/{{ item }}.caddy"
+        insertafter: '^\S.*\{$'
+        line: "\timport protected"
+      loop: [pdm, omv]
+
+    - name: Build the new uniquely tagged Caddy image before touching the running proxy
+      ansible.builtin.command:
+        argv: [docker, compose, '-p', caddy, '-f', "{{ security_candidate }}/compose.yaml", build, caddy]
+      changed_when: true
+      no_log: true
+
+    - name: Write storage-only configurations for export and import
+      ansible.builtin.copy:
+        content: "{{ item.config | to_json }}\n"
+        dest: /root/caddy-security-transit/{{ item.name }}.json
+        mode: '0600'
+      loop:
+        - name: filesystem
+          config:
+            storage: { module: file_system, root: /data/caddy }
+        - name: redis
+          config:
+            storage:
+              module: redis
+              address: [valkey:6379]
+              db: '4'
+              key_prefix: caddy
+              encryption_key: "{{ service_secrets.valkey_encryption_key }}"
+              password: "{{ service_secrets.valkey_password }}"
+              compression: flate
+      no_log: true
+
+    - name: Export current production certificates then import into the isolated Valkey
+      block:
+        - name: Export filesystem storage with no network access
+          ansible.builtin.command:
+            argv:
+              - docker
+              - run
+              - --rm
+              - --network
+              - none
+              - -v
+              - caddy_data:/data:ro
+              - -v
+              - /root/caddy-security-transit:/snapshot
+              - "{{ security_image }}"
+              - caddy
+              - storage
+              - export
+              - --config
+              - /snapshot/filesystem.json
+              - --output
+              - /snapshot/caddy-filesystem.tar
+          changed_when: true
+          no_log: true
+
+        - name: Import the current certificates and accounts into Redis
+          ansible.builtin.command:
+            argv:
+              - docker
+              - run
+              - --rm
+              - --network
+              - caddy_security
+              - -v
+              - /root/caddy-security-transit:/snapshot
+              - "{{ security_image }}"
+              - caddy
+              - storage
+              - import
+              - --config
+              - /snapshot/redis.json
+              - --input
+              - /snapshot/caddy-filesystem.tar
+          changed_when: true
+          no_log: true
+
+        - name: Export Redis storage to prove old assets decrypt and new assets round trip
+          ansible.builtin.command:
+            argv:
+              - docker
+              - run
+              - --rm
+              - --network
+              - caddy_security
+              - -v
+              - /root/caddy-security-transit:/snapshot
+              - "{{ security_image }}"
+              - caddy
+              - storage
+              - export
+              - --config
+              - /snapshot/redis.json
+              - --output
+              - /snapshot/caddy-redis.tar
+          changed_when: true
+          no_log: true
+
+        - name: Verify every current certificate-storage asset survived the import
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - -c
+              - |
+                import tarfile
+                with tarfile.open('/root/caddy-security-transit/caddy-filesystem.tar') as old, \
+                     tarfile.open('/root/caddy-security-transit/caddy-redis.tar') as new:
+                    expected = {m.name: old.extractfile(m).read() for m in old if m.isfile()}
+                    actual = {m.name: new.extractfile(m).read() for m in new if m.isfile()}
+                    assert expected, 'No filesystem assets exported'
+                    assert all(actual.get(name) == value for name, value in expected.items()), 'Asset differs after import'
+                    assert len(actual) >= len(expected)
+                print('All current certificate assets match the Redis export; old encrypted storage also decrypts')
+          changed_when: false
+
+        - name: Fetch the protected storage exports
+          ansible.builtin.fetch:
+            src: /root/caddy-security-transit/{{ item }}
+            dest: "{{ repo }}/build/caddy-security/{{ item }}"
+            flat: true
+          loop: [caddy-filesystem.tar, caddy-redis.tar]
+          no_log: true
+
+        - name: Keep both storage exports on both backup disks
+          ansible.builtin.copy:
+            src: "{{ repo }}/build/caddy-security/{{ item.1 }}"
+            dest: "{{ security_backup }}/{{ item.1 }}"
+            mode: '0600'
+          delegate_to: "{{ item.0 }}"
+          loop: "{{ ['torus', 'kestrel'] | product(['caddy-filesystem.tar', 'caddy-redis.tar']) | list }}"
+          no_log: true
+
+      always:
+        - name: Remove the temporary plaintext storage configurations
+          ansible.builtin.file:
+            path: /root/caddy-security-transit/{{ item }}.json
+            state: absent
+          loop: [filesystem, redis]
+
+        - name: Remove local storage transit copies
+          ansible.builtin.file:
+            path: "{{ repo }}/build/caddy-security"
+            state: absent
+          delegate_to: localhost
+          vars:
+            ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: Copy the verification helpers into the private candidate
+      ansible.builtin.copy:
+        src: "{{ repo }}/scripts/{{ item.source }}"
+        dest: "{{ security_candidate }}/{{ item.target }}"
+        mode: '0600'
+      loop:
+        - { source: verify-proxy-security.py, target: verify_proxy_security.py }
+        - { source: validate-caddy-security.py, target: validate_caddy_security.py }
+
+    - name: Validate the candidate including the live upstream labels before a cutover
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - "{{ security_candidate }}/validate_caddy_security.py"
+          - "{{ security_candidate }}"
+          - "{{ security_image }}"
+          - "{{ domain }}"
+      changed_when: false
+
+    - name: Require the privately tested candidate to be unchanged
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -c
+          - |
+            import hashlib, json, pathlib, subprocess, sys
+            root = pathlib.Path(sys.argv[1])
+            proof = json.loads((root / 'validated.json').read_text())
+            assert proof['domain'] == sys.argv[3]
+            for name, expected in proof['files'].items():
+                assert hashlib.sha256((root / name).read_bytes()).hexdigest() == expected, 'Candidate changed'
+            image = json.loads(subprocess.check_output(['docker', 'image', 'inspect', sys.argv[2]], text=True))[0]['Id']
+            assert image == proof['image'], 'Image changed since private verification'
+          - "{{ security_candidate }}"
+          - "{{ security_image }}"
+          - "{{ domain }}"
+      changed_when: false
+      when: not security_prepare_only | default(false) | bool
+      tags: [security-cutover]
+
+    - name: Replace only the proxy and verify recovery, with automatic rollback
+      when: not security_prepare_only | default(false) | bool
+      tags: [security-cutover]
+      block:
+        - name: Promote the validated bootstrap files
+          ansible.builtin.copy:
+            src: "{{ security_candidate }}/{{ item }}"
+            dest: /opt/caddy/{{ item }}
+            remote_src: true
+            mode: preserve
+          loop: [compose.yaml, Caddyfile, Dockerfile]
+          no_log: true
+
+        - name: Replace backend storage without changing the running proxy's mounted directory
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - -c
+              - |
+                import pathlib, shutil, uuid
+                root = pathlib.Path('/opt/caddy')
+                suffix = uuid.uuid4().hex
+                new = root / ('backends-new-' + suffix)
+                shutil.copytree('/opt/caddy-security-candidate/backends', new, symlinks=True)
+                (root / 'backends').rename(pathlib.Path('/root/caddy-security-transit') / ('backends-before-' + suffix))
+                new.rename(root / 'backends')
+          changed_when: true
+
+        - name: Recreate Caddy using the existing data and config volumes
+          ansible.builtin.command:
+            argv: [docker, compose, '-p', caddy, '-f', /opt/caddy/compose.yaml, up, --detach, --wait, caddy]
+          changed_when: true
+          no_log: true
+
+        - name: Verify all routes, CrowdSec parsing and actual request blocking
+          ansible.builtin.command:
+            argv: [/usr/bin/python3, '-c', "{{ lookup('ansible.builtin.file', repo + '/scripts/verify-proxy-security.py') }}", "{{ domain }}"]
+          changed_when: true
+
+        - name: Retain verified protection on future bootstrap runs
+          ansible.builtin.copy:
+            content: |
+              Restored storage and request enforcement verified.
+            dest: /opt/caddy/security-enabled
+            mode: '0600'
+
+      rescue:
+        - name: Stop only the replacement proxy before restoring its mounted files
+          ansible.builtin.command:
+            argv: [docker, stop, caddy]
+          changed_when: true
+          no_log: true
+
+        - name: Restore the original bootstrap without deleting certificate volumes
+          ansible.builtin.command:
+            argv: [tar, '-C', /opt/caddy, '-xf', /root/caddy-security-transit/caddy-bootstrap.tar]
+          changed_when: true
+          no_log: true
+
+        - name: Restore the original activation state after a failed first cutover
+          ansible.builtin.file:
+            path: /opt/caddy/security-enabled
+            state: absent
+          when: not security_marker_before.stat.exists
+
+        - name: Start the original Caddy image and settings
+          ansible.builtin.command:
+            argv: [docker, compose, '-p', caddy, '-f', /opt/caddy/compose.yaml, up, --detach, --wait, caddy]
+          changed_when: true
+          no_log: true
+
+        - name: Report the failed cutover after restoring the original proxy
+          ansible.builtin.fail:
+            msg: Caddy integration verification failed; the original proxy configuration was restored.

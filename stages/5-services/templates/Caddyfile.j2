@@ -9,11 +9,49 @@
 	# Let's Encrypt. A test run can use its staging server instead (untrusted certificates, but no risk
 	# to the real rate limits): mise run services --tags proxy -e caddy_acme_staging=true
 	acme_ca {{ 'https://acme-staging-v02.api.letsencrypt.org/directory' if caddy_acme_staging | default(false) | bool else 'https://acme-v02.api.letsencrypt.org/directory' }}
+{% if caddy_security_enabled | default(false) | bool %}
+	storage redis {
+		address valkey:6379
+		password {env.VALKEY_PASSWORD}
+		db 4
+		encryption_key {env.VALKEY_ENCRYPTION_KEY}
+		compression true
+	}
+	crowdsec {
+		api_url http://crowdsec:8080
+		api_key {env.CROWDSEC_API_KEY}
+		ticker_interval 15s
+		enable_hard_fails
+	}
+	order crowdsec first
+{% endif %}
 }
+
+{% if caddy_security_enabled | default(false) | bool %}
+(protected) {
+	log {
+		output stdout
+		format json
+	}
+	crowdsec
+}
+
+# docker-proxy merges these blocks with the upstreams supplied by container labels.
+# This applies protection without restarting either application.
+{{ arcane_host }} {
+	import protected
+}
+{{ cliproxy_host }} {
+	import protected
+}
+{% endif %}
 
 # The wildcard certificate, through Cloudflare DNS (works for names that exist only inside the network).
 # A name with no route of its own gets its connection closed.
 *.{{ domain }} {
+{% if caddy_security_enabled | default(false) | bool %}
+	import protected
+{% endif %}
 	tls {
 		dns cloudflare {env.CF_API_TOKEN}
 		resolvers 1.1.1.1 1.0.0.1

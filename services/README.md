@@ -96,3 +96,21 @@ network; CrowdSec also has an outbound network for its community API and collect
 Certificate storage uses `noeviction`. Polling stays disabled during migration.
 Caddy integration is a separate step after replacement health is verified.
 CloudBeaver remains stopped on externum until Research Cruise migrates.
+
+`mise run integrate-proxy-security -e security_prepare_only=true` builds and tests
+an unpublished Caddy candidate, imports current certificates without reissuing them,
+and verifies an actual CrowdSec ban and its removal. The cutover checks that the
+validated image and files have not changed, switches only Caddy, and checks all four
+UI routes, the existing certificate, actual blocking and parsed access logs. Failures
+restore the original image and bootstrap. Use `--tags security-cutover` after a
+successful private preparation to avoid repeating it.
+
+The one-time integration writes `/opt/caddy/security-enabled` only after verification.
+Normal proxy and backend-only updates read this marker and preserve protection;
+unhealthy dependencies block updates. A fresh bootstrap has no marker and can start
+Caddy/Arcane before restoring application data. Subsequent Caddy changes use the
+normal platform bootstrap, rather than importing the old filesystem assets again.
+
+The existing tunnel includes `cruise.wsiwiec.com -> https://caddy` on externum.
+Cloudflared must remain there until Research Cruise has a verified replacement origin.
+CloudBeaver is still stopped and has no published ports.
