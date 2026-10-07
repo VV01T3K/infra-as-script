@@ -63,13 +63,14 @@ Secrets: `secrets/services.sops.yaml` (Arcane, Technitium, Cloudflare token, NAS
 
 PDM connectivity is complete. Its role includes audit, guest power management and migration privileges, but cross-node remote migration needs broader permissions and remains a later task; dashboard health does not verify it.
 
-### Arcane GitOps implementation (2026-10-07, live verification pending)
+### Arcane GitOps implementation (2026-10-07, automatic polling verification pending)
 
 - Owner confirmed `infra-as-script` is now public: use anonymous HTTPS, no deploy key or GitHub credential. Research Cruise repository access remains separate, for its later migration.
 - Added independent `mise run gitops` (`stages/5-services/gitops.yml`), declarative repository/environment mappings in `gitops-config.yml`, and an isolated `services/engi/gitops-canary/compose.yaml`. Platform bootstrap and live apps are untouched.
-- Polling defaults off. Source must be published before `mise run gitops -e gitops_sync_now=true -e gitops_verify_canary=true`. That run syncs, injects a SOPS-backed canary token, verifies a second sync preserves it, then starts only the canary and checks health, revision, token and isolation without printing secrets. See `services/README.md` for changed-source, unchanged-source, polling and rollback checks.
+- Initial mapping was created with polling off. Source must be published before `mise run gitops -e gitops_sync_now=true -e gitops_verify_canary=true`. That run syncs, injects a SOPS-backed canary token, verifies a second sync preserves it, then starts only the canary and checks health, revision, token and isolation without printing secrets. Baseline live checks passed; polling is now enabled for the canary and preserved by its declaration. See `services/README.md` for verification and rollback checks.
 - Running manager `/api/version` confirms v2.15.0; its public OpenAPI schema matches the inspected tagged source. A running project can redeploy after changed content even with `redeployAfterSync=false`; stopped projects stay stopped by default. No Git write-back/backup mode is enabled.
-- Offline API-fixture checks passed: initial creation, idempotent reruns with/without polling, token preservation, polling pause during secret repair, sync failures and duplicate-name rejection. Compose validation and local isolated Alpine container smoke check passed. Live sync/deployment has not yet run.
+- Offline API-fixture checks passed: initial creation, idempotent reruns with/without polling, token preservation, polling pause during secret repair, sync failures and duplicate-name rejection. Compose validation and local isolated Alpine container smoke check passed. Live canary revision 1 deployed healthy on engi (container `75da9224be67`, source `f32fbff`); unchanged sync and reconciliation both returned changed=0 and kept that container. Token survived sync; no ports, mounts or network access. Publishing revision 2 to verify automatic polling next.
+- Arcane v2.15.0 needs manager repository configuration propagated to an agent before creating its mapping (use the supported environment resource-sync endpoint). Empty project envContent/runningCount may be omitted from responses; handle missing values as empty/zero. Both live-discovered cases are fixed in the playbook.
 - PDM connectivity remains verified. No network apply, live-app migration or guest retirement is part of this work.
 
 ### Lessons (do not repeat)

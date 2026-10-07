@@ -13,7 +13,7 @@ gitops_stacks:
     repository: infra-as-script
     branch: main
     composePath: services/engi/gitops-canary/compose.yaml
-    autoSync: "{{ gitops_canary_auto_sync | default(false) | bool }}"
+    autoSync: "{{ gitops_canary_auto_sync | default(true) | bool }}"
     syncInterval: 5
     # The canary has no supporting files. Future apps can opt into directory sync.
     syncDirectory: false

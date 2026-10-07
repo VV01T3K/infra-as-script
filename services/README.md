@@ -24,10 +24,11 @@ Arcane does not decrypt SOPS files or receive the YubiKey. Keep `.env` and
 
 ## Initial canary verification
 
-After publishing the canary source to `main`, run:
+The canary now uses five-minute polling by default. For initial setup or a
+manual verification, disable polling explicitly:
 
 ```sh
-mise run gitops -e gitops_sync_now=true -e gitops_verify_canary=true
+mise run gitops -e gitops_canary_auto_sync=false -e gitops_sync_now=true -e gitops_verify_canary=true
 ```
 
 This generates and preserves a SOPS-backed canary token, creates a manual-only
@@ -38,7 +39,7 @@ its container ID and source commit. It has no ports, persistent storage,
 network access or external integrations. Omit `gitops_verify_canary` to leave
 the initially synced project stopped.
 
-Change `CANARY_REVISION` from `1` to `2`, commit and push, then run the same command.
+Change `CANARY_REVISION`, commit and push, then run the same command.
 Confirm Arcane records the new commit, the running canary is recreated with
 revision `2`, and it stays healthy with the same secret token. Repeat without a
 Git change and confirm no recreation. Run reconciliation again and confirm
@@ -51,8 +52,9 @@ After verification, enable five-minute polling:
 mise run gitops -e gitops_canary_auto_sync=true
 ```
 
-Persist `autoSync: true` in the declared mapping if polling should remain enabled
-on future runs. Default reconciliation otherwise restores manual sync.
+The declared canary mapping preserves polling on future runs. Use
+`-e gitops_canary_auto_sync=false` to pause it; declare new application mappings
+with polling off until their deployment and secrets have been verified.
 Arcane checks the branch periodically; pushes do not immediately deploy.
 Changed content can redeploy an already-running project even with
 `redeployAfterSync: false`. That flag keeps stopped projects stopped.
