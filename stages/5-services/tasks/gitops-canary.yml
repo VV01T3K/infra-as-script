@@ -16,7 +16,7 @@
     method: POST
     body: {}
     timeout: 120
-  when: gitops_canary_runtime.json.data.runningCount == 0
+  when: gitops_canary_runtime.json.data.runningCount | default(0) == 0
   changed_when: true
   no_log: true
 

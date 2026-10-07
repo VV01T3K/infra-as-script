@@ -155,7 +155,7 @@
         body: { autoSync: false }
       when:
         - gitops_mapping_now.json.data.autoSync
-        - gitops_project.json.data.envContent != gitops_env_content
+        - gitops_project.json.data.envContent | default('', true) != gitops_env_content
       register: gitops_pause
       changed_when: true
       no_log: true
@@ -170,7 +170,7 @@
         method: PUT
         body:
           envContent: "{{ gitops_env_content }}"
-      when: gitops_project.json.data.envContent != gitops_env_content
+      when: gitops_project.json.data.envContent | default('', true) != gitops_env_content
       changed_when: true
       no_log: true
 
@@ -197,7 +197,7 @@
 
     - name: Confirm the secret overrides survived
       ansible.builtin.assert:
-        that: gitops_project_after.json.data.envContent == gitops_env_content
+        that: gitops_project_after.json.data.envContent | default('', true) == gitops_env_content
         fail_msg: Git sync did not preserve the declared secret overrides.
         quiet: true
       no_log: true
