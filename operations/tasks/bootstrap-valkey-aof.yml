@@ -1,0 +1,66 @@
+# Enabling AOF at startup can ignore a restored standalone RDB. Load the RDB
+# first, then let Valkey create its own AOF from the loaded state.
+- name: Initialize append-only persistence from the restored RDB
+  block:
+    - name: Start an isolated snapshot loader with no TCP listener
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - --detach
+          - --name
+          - infra-valkey-restore
+          - --network
+          - none
+          - --volume
+          - valkey_certificates:/data
+          - valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+          - valkey-server
+          - --appendonly
+          - 'no'
+          - --port
+          - '0'
+          - --unixsocket
+          - /tmp/restore.sock
+          - --unixsocketperm
+          - '600'
+      changed_when: true
+
+    - name: Require the restored certificate database to contain data
+      ansible.builtin.command:
+        argv: [docker, exec, infra-valkey-restore, valkey-cli, '-s', /tmp/restore.sock, '-n', '4', DBSIZE]
+      register: valkey_restored_size
+      until: valkey_restored_size.rc == 0 and valkey_restored_size.stdout | int > 0
+      retries: 10
+      delay: 1
+      changed_when: false
+
+    - name: Enable AOF after the database has loaded
+      ansible.builtin.command:
+        argv: [docker, exec, infra-valkey-restore, valkey-cli, '-s', /tmp/restore.sock, CONFIG, SET, appendonly, 'yes']
+      register: valkey_aof_enabled
+      failed_when: valkey_aof_enabled.stdout != 'OK'
+      changed_when: true
+
+    - name: Wait for the initialized AOF rewrite to finish successfully
+      ansible.builtin.command:
+        argv: [docker, exec, infra-valkey-restore, valkey-cli, '-s', /tmp/restore.sock, --raw, INFO, persistence]
+      register: valkey_aof_ready
+      until: >-
+        valkey_aof_ready.rc == 0 and 'aof_enabled:1' in valkey_aof_ready.stdout
+        and 'aof_rewrite_in_progress:0' in valkey_aof_ready.stdout
+        and 'aof_last_bgrewrite_status:ok' in valkey_aof_ready.stdout
+      retries: 30
+      delay: 1
+      changed_when: false
+
+  always:
+    - name: Remove only the isolated restore container
+      ansible.builtin.command:
+        argv: [docker, rm, '--force', infra-valkey-restore]
+      changed_when: true
+
+- name: Keep the restored database size for the post-start check
+  ansible.builtin.set_fact:
+    security_valkey_expected_keys: "{{ valkey_restored_size.stdout | int }}"

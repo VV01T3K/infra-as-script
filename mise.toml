@@ -138,6 +138,10 @@ run = [
   "tofu -chdir=network fmt -check -diff",
 ]
 
+[tasks.check-valkey-restore]
+description = "Exercise real Valkey RDB-to-AOF recovery in disposable isolated Podman containers"
+run = "python scripts/check-valkey-restore.py"
+
 [tasks.pre-commit]
 description = "Runs before every commit: block secrets, then check"
 run = [

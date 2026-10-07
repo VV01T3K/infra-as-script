@@ -5,6 +5,7 @@ from pathlib import Path
 import runpy
 import sqlite3
 import subprocess
+import sys
 import tarfile
 import tempfile
 from unittest.mock import patch
@@ -32,6 +33,14 @@ with tempfile.TemporaryDirectory() as temporary:
     def output(arguments):
         if arguments[:2] == ['lxc-info', '-n']:
             return str(os.getpid()).encode()
+        if arguments[0] == sys.executable:
+            # Namespace entry needs host-root privileges; the live command verifies
+            # those calls. This fixture exercises the actual backup/serialization.
+            program = arguments[2]
+            for call in ("os.setns(namespace, 0)", "os.fchdir(root)", "os.chroot('.')", "os.chdir('/')"):
+                assert call in program
+                program = program.replace(call, 'pass')
+            return real_output([arguments[0], '-c', program, *arguments[3:]])
         assert arguments[:4] == ['pct', 'exec', 'fixture', '--']
         command = arguments[4:]
         if command == ['docker', 'inspect', 'crowdsec']:

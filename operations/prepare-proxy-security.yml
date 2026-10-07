@@ -115,7 +115,10 @@
 
     - name: Back up CrowdSec configuration and consistent SQLite state online
       ansible.builtin.command:
-        argv: [/usr/bin/python3, '-c', "{{ lookup('ansible.builtin.file', repo + '/scripts/snapshot-crowdsec.py') }}"]
+        argv:
+          - /usr/bin/python3
+          - -c
+          - "{{ lookup('ansible.builtin.file', repo + '/scripts/snapshot-crowdsec.py') }}"
       environment:
         GUEST: "{{ security_guests.results[1].stdout }}"
         BACKUP: "{{ security_backup }}"
@@ -200,6 +203,9 @@
                 print('Restored configuration, ownership, contents and SQLite table counts match')
           changed_when: false
 
+        - name: Initialize AOF from the verified Valkey snapshot before starting the normal project
+          ansible.builtin.include_tasks: tasks/bootstrap-valkey-aof.yml
+
         - name: Explicitly sync only the two prepared stacks
           ansible.builtin.set_fact:
             gitops_sync_now: true
@@ -213,6 +219,14 @@
           loop: [valkey, crowdsec]
           loop_control:
             loop_var: security_project_name
+
+        - name: Require the normal Valkey process to retain the restored certificate keys
+          ansible.builtin.shell: |
+            set -eu
+            docker exec valkey sh -ec 'export REDISCLI_AUTH="$VALKEY_PASSWORD"; valkey-cli --raw -n 4 DBSIZE'
+          register: security_valkey_size
+          failed_when: security_valkey_size.stdout | int != security_valkey_expected_keys | int
+          changed_when: false
 
         - name: Record the protected backup location
           ansible.builtin.copy:

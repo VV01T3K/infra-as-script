@@ -85,6 +85,9 @@ runtime identity.
 zoltan. Publish their definitions first. It keeps the originals running, copies a
 native Valkey replication snapshot and an online SQLite backup, preserves credentials
 in SOPS, and verifies restored contents before starting the GitOps replacements.
+The RDB is loaded with AOF disabled, then Valkey initializes AOF before normal
+startup; the final key count must match. `mise run check-valkey-restore` exercises
+that restart using the real image in disposable Podman containers.
 Archives remain mode 0600 under a dated `proxy-security` directory on both backup disks.
 Target volumes must be absent. A retry refuses existing data instead of overwriting it.
 
