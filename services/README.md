@@ -64,3 +64,17 @@ Images are pinned; no Git backup/write-back mode is configured.
 For rollback, revert the source commit and sync again. To stop the experiment,
 restore manual sync, then stop only the canary in Arcane. Deleting a mapping from
 the declaration does not delete its live resources; cleanup is explicit.
+
+## Frog cutover
+
+Frog is verified on zoltan with its original SSH key and preserved volume data.
+The original is stopped on externum, and both hosts hold protected backups.
+Polling remains disabled until automatic build behavior is verified. See
+`services/zoltan/frog-keepalive/README.md` for cutover and rollback commands.
+`gitops_only_stack=frog-keepalive` limits reconciliation to this stack and rejects
+unknown names. CloudBeaver remains stopped until the Research Cruise migration.
+
+The manager's project directory is owned by its application UID/GID 65532, with
+mode 0700. Bootstrap and GitOps reconcile this ownership; bootstrap Compose
+files remain root-only. The manager's root supervisor is not its filesystem
+runtime identity.

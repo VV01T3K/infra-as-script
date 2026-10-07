@@ -4,7 +4,7 @@ Prepared 2026-10-05. This document records the user's agreed target and implemen
 
 ## Next-session quick start (2026-10-07)
 
-**Arcane GitOps foundation is implemented and verified. Resume with retained-application migration planning, not PDM debugging, another network apply or repeating the canary setup.** The public repository uses anonymous HTTPS; the isolated canary on engi has verified manual sync, secret preservation, unchanged-sync behavior and automatic five-minute polling.
+**Arcane GitOps and the Frog cutover are verified. Resume with the remaining retained applications: Valkey/CrowdSec and Caddy integration, then Cloudflared. CloudBeaver stays stopped until Research Cruise migrates.** The public repository uses anonymous HTTPS; the isolated canary on engi has verified manual sync, secret preservation, unchanged-sync behavior and automatic five-minute polling.
 
 ### Repository checkpoint
 - Working directory: `/home/wojtek/Projects/infra-as-script`; remote: public `VV01T3K/infra-as-script` (owner confirmed public access).
@@ -16,16 +16,28 @@ Prepared 2026-10-05. This document records the user's agreed target and implemen
 1. Read this quick start, the current-state summary and the lessons below; older "not run yet" entries are chronological history, not a fresh to-do list.
 2. Check `git status --short --branch` and recent commits before editing. Coordinate one writer at a time; stage only intended files.
 3. Read `services/README.md` and the GitOps implementation summary below. Arcane's running version and OpenAPI schema were confirmed as v2.15.0. `komoda-homelab` was freshly inspected at main `2cb9b50`; recheck upstream before migrating apps rather than assuming the temporary checkout still exists.
-4. Present a short retained-app migration plan before implementation: data preservation, stack dependencies, per-environment secret mappings, proxy/access controls, cutover and rollback. Manager/Caddy bootstrap remains independent of application GitOps. Research Cruise repository access is a separate later step.
+4. Continue the retained-app plan approved in the recovered thread: Frog is complete; inspect and migrate Valkey/CrowdSec before extending Caddy, then verify tunnel origins before Cloudflared. Preserve CloudBeaver stopped for activation with Research Cruise. Manager/Caddy bootstrap remains independent of application GitOps. Research Cruise repository access is a separate later step.
 5. Do not retire old guests before migrations, replacement health and recovery are verified. Research Cruise remains live on externum; its verified backup exists on both backup disks, but nightly automation and off-site copying are not implemented.
 
 ### Verified and unverified boundaries
-- GitOps canary revision 2 is healthy on engi, with no ports, mounts or network access. Manual sync preserved its SOPS-backed token; unchanged sync kept the container. Automatic polling recreated it for the published revision without a manual sync; post-polling reconciliation returned changed=0. Only the canary is mapped; live apps have not migrated.
+- GitOps canary revision 2 is healthy on engi, with no ports, mounts or network access. Manual sync preserved its SOPS-backed token; unchanged sync kept the container. Automatic polling recreated it for the published revision without a manual sync; post-polling reconciliation returned changed=0. The canary and Frog on zoltan are mapped; all other retained apps remain on the old guests. Frog polling stays disabled until build behavior is verified.
 - Owner's PDM screenshot confirms all remotes reachable, kestrel/torus online, 1 VM and 9 LXCs running. Guest start/stop and cross-node migration were not exercised; broader cross-node migration permissions are deferred.
 - No additional infrastructure apply was run during closeout. `mise run check`, both `tofu validate` roots and the commit's secret scan passed. Network state was confirmed encrypted without decrypting it.
 - The preview opened the PDM login screen, but the owner chose to provide a screenshot instead of signing in there. Do not ask them to paste credentials.
 - PBS and Proxmox guest backups were deliberately dropped. S3/Arcane backups and old-guest retirement remain later work. CLIProxyAPI subscription warm-up scheduling was only an optional idea, not implemented or required for GitOps.
 - Prior T3 thread: `6d614e48-1966-4e69-ba1a-c53b521a7c56` (Plan Infrastructure Migration). Its recovery point and decisions are recorded here; no need to re-read the full transcript to continue.
+
+### Recovered thread and Frog cutover (2026-10-07, verified)
+
+- Recovered T3 thread `f6e84e3c-9333-4430-93a7-e70c32e9cafe` from local read-only history. It ended on model-stream disconnects while Frog migration code was unfinished. Recent CLIProxyAPI logs did not establish a timeout/keepalive cause; no proxy settings were changed.
+- Re-inspected `komoda-homelab` at `2cb9b5038233c977cb2fbdbbdd476ce5be2dbc5f` and the live fleet. CloudBeaver is stopped and its database is available only within externum's Docker network. Owner explicitly chose to preserve it stopped and activate it with Research Cruise. Its workspace remains on externum; it has not been copied or exposed.
+- Published `d8d1c19`, `63699e6`, `119ca36`, and `315d5c2`: inspection command, Frog definitions, targeted reconciliation, protected two-host backups, verified restoration, rollback, explicit initial sync and manager project-storage ownership. `mise run migrate-frog` is a one-time cutover; a retry with `-e frog_resume=true` checks restored volumes against a fresh source archive without overwriting them.
+- Two preparation failures exercised rollback and restarted the original. The missing Compose file exposed Ansible variable precedence: the configuration's sync default overrode a play variable. The cutover now explicitly sets the sync fact, resolves the project path from API metadata/mounts, and completes sync/build before stopping the original. `mise run check` includes a regression check using Ansible's actual variable loading.
+- A further preflight exposed the manager directory's root-only ownership. Arcane v2.15.0 has a root supervisor and a UID/GID 65532 application process. Only `/opt/arcane/projects` now belongs to 65532 with mode 0700; bootstrap Compose remains root-only. Ownership is reconciled by both manager bootstrap and GitOps; the template explicitly pins the matching PUID/PGID. Retrying the same sync changed HTTP 500 into HTTP 200, without restarting Arcane.
+- Final cutover: `frog-keepalive` runs on zoltan as container `a13ecf10cd18`, using external volumes `frog_keepalive_ssh` and `frog_keepalive_data`. Restored contents, permissions and ownership matched the archives. A real restricted login succeeded with the existing key; its verification intentionally advanced the restored last-success timestamp. Independent checks confirmed matching source/target private-key hashes, correct mounts, read-only root filesystem, no published ports, no restart, and a stopped original on externum. Reconciliation returned `changed=0`; the verification batch exited 0.
+- Latest backups on both torus and kestrel: `/mnt/pve/backup/frog-keepalive/20261007T174740Z/`. The two root-only archives contain the private key and state. Earlier attempt backups are retained too. Local and guest transit archives were removed. Do not remove the original container/volumes or backups before the remaining migration and recovery work is verified.
+- Frog polling remains disabled. For a later source change, sync only Frog, rebuild its image and recreate it. Verify automatic build behavior before enabling polling. Keep the separate two-month reminder until Mikrus confirms automated logins reset inactivity.
+- Local lint, syntax, secret scans, the precedence regression and an isolated real SSH-server check passed. The SSH check rejected a wrong fingerprint without changing state, confirmed the forced command and kept the existing key. PDM, network, other live apps and old-guest retirement were not changed.
 
 ## Current state and next steps (updated 2026-10-07)
 
@@ -36,7 +48,7 @@ The sections after this summary are the original plan (2026-10-05) and a dated p
 | Machine | Guest | ID / address | What | Managed by |
 |---|---|---|---|---|
 | kestrel (10.1.0.2) | dns1 (LXC, Alpine) | 2054 / 10.20.0.54 | Technitium primary, Arcane agent | stages 3–5 |
-| kestrel | zoltan (LXC, Alpine) | 2010 / 10.20.0.10 | Caddy (`*.lab.wsiwiec.com` wildcard via Cloudflare DNS), Arcane v2.15.0 manager at https://arcane.lab.wsiwiec.com, CLIProxyAPI at https://cliproxy.lab.wsiwiec.com | stages 3–5 |
+| kestrel | zoltan (LXC, Alpine) | 2010 / 10.20.0.10 | Caddy (`*.lab.wsiwiec.com` wildcard via Cloudflare DNS), Arcane v2.15.0 manager at https://arcane.lab.wsiwiec.com, CLIProxyAPI at https://cliproxy.lab.wsiwiec.com; Frog keepalive | platform stages 3–5; Frog Arcane GitOps |
 | kestrel | pdm (LXC, Debian 13) | 2011 / 10.20.0.11 | Proxmox Datacenter Manager 1.1.7 at https://pdm.lab.wsiwiec.com through Caddy; kestrel and torus reachable | stages 2–5 + network |
 | torus (10.1.0.30) | dns2 (LXC, Alpine) | 2055 / 10.20.0.55 | Technitium secondary, Arcane agent | stages 3–5 |
 | torus | engi (LXC, Alpine) | 2020 / 10.20.0.20 | Arcane agent (later S3) | stages 3–5 |
@@ -46,6 +58,7 @@ The sections after this summary are the original plan (2026-10-05) and a dated p
 Secrets: `secrets/services.sops.yaml` (Arcane, Technitium, Cloudflare token, NAS passwords, PDM tokens/root password, CLIProxyAPI keys), `secrets/tofu.sops.yaml`, `secrets/fleet-ssh-key.sops.yaml`, per-host root passwords. Live Ansible/OpenTofu operations use the repo wrappers and require the owner's YubiKey PIN/touches to decrypt credentials; coordinate those runs with them. Offline lint/format/validation and Git operations do not require secret decryption. Do not expose plaintext credentials in logs, commits or chat.
 
 ### Done
+- Frog migrated from externum to zoltan with its original SSH key and schedule state. Restricted login and independent data/runtime checks passed; reconciliation changed=0. Original container and volumes remain stopped on externum. See the recovery/cutover record below.
 - Arcane GitOps foundation: anonymous public-repository access, declarative environment/stack mappings, SOPS-backed project overrides, isolated engi canary, verified automatic five-minute polling and idempotent reruns. See the implementation summary below.
 - Step 1 (stage 1–2 safety fixes), step 2 for Arcane (HTTPS through Caddy; router stays `allow_insecure`, owner's choice), step 3 (disk inspection; Research Cruise backup `ResearchCruiseApp-20261005-2234Z.bak` on both backup disks, test-restored), step 4 (zoltan/engi, Arcane on zoltan, OMV VM `nas`), step 5 chunk 1 (OMV data disk, user/share `wojtek`).
 - PDM in a Debian LXC, PDM and OMV HTTPS web routes through Caddy with pinned backend certificates, CLIProxyAPI, Arcane v2.15.0 and CPU reporting fixes: deployed; combined in commit `8e20bcf`. Services re-run changed=0; PDM/OMV routes verified from the laptop.
@@ -57,7 +70,7 @@ Secrets: `secrets/services.sops.yaml` (Arcane, Technitium, Cloudflare token, NAS
 - Research Cruise nightly DB backup, alerts/notifications, off-site copy: unresolved, later.
 
 ### Next
-1. Migrate retained apps from komoda-homelab (step 6), preserving data and rollback; plan the dependency and access-control changes first.
+1. Continue retained-app migration (step 6): Frog is complete. Valkey/CrowdSec and Caddy integration come next; Cloudflared follows verified origins. CloudBeaver remains stopped for activation with Research Cruise. Preserve data and rollback; verify dependency and access controls first.
 2. Migrate Research Cruise staging onto zoltan, with separate repository access, data preservation and rollback.
 3. Arcane backup to S3 (implementation and storage mount still to choose), with a tested restore. Research Cruise scheduled backups and an independent off-site copy remain unresolved.
 4. Retire the old guests (step 7) only after migration, replacement health and recovery are verified; decide what happens to tailscale-box and excluded-app data first.
