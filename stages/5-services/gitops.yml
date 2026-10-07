@@ -1,0 +1,64 @@
+# Independent of manager/Caddy bootstrap. Run through `mise run gitops`.
+- name: Reconcile Arcane GitOps
+  hosts: arcane_manager
+  gather_facts: false
+  vars_files: [gitops-config.yml]
+  vars:
+    repo: "{{ playbook_dir | dirname | dirname }}"
+    arcane_api: http://127.0.0.1:3552/api
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        X-Api-Key: "{{ service_secrets.arcane_api_key }}"
+      body_format: json
+  tasks:
+    - name: Read the service secrets unlocked by the wrapper
+      ansible.builtin.set_fact:
+        service_secrets: "{{ lookup('ansible.builtin.env', 'SERVICE_SECRETS') | default('{}', true) | from_json }}"
+      no_log: true
+
+    - name: Require the bootstrapped manager credentials
+      ansible.builtin.assert:
+        that: service_secrets.arcane_api_key is defined
+        fail_msg: Run the platform service bootstrap before GitOps.
+        quiet: true
+
+    - name: Generate a token for the isolated canary if missing
+      ansible.builtin.set_fact:
+        service_secrets: >-
+          {{ service_secrets | combine({'gitops_canary_token':
+             lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits'])}) }}
+      when: service_secrets.gitops_canary_token is not defined
+      register: gitops_secret
+      no_log: true
+
+    - name: Preserve the token through SOPS
+      ansible.builtin.include_tasks: tasks/save-secrets.yml
+      when: gitops_secret is not skipped
+
+    - name: Read registered repositories and environments
+      ansible.builtin.uri:
+        url: "{{ arcane_api }}/{{ item }}"
+      loop: ['customize/git-repositories?limit=1000', environments]
+      register: gitops_current
+      no_log: true
+
+    - name: Reconcile declared repositories
+      ansible.builtin.include_tasks: tasks/gitops-repository.yml
+      loop: "{{ gitops_repositories }}"
+      loop_control:
+        loop_var: gitops_repository
+        label: "{{ gitops_repository.name }}"
+
+    - name: Refresh repository IDs after creation
+      ansible.builtin.uri:
+        url: "{{ arcane_api }}/customize/git-repositories?limit=1000"
+      register: gitops_repos
+      no_log: true
+
+    - name: Reconcile declared stack mappings
+      ansible.builtin.include_tasks: tasks/gitops-stack.yml
+      loop: "{{ gitops_stacks }}"
+      loop_control:
+        loop_var: gitops_stack
+        label: "{{ gitops_stack.environment }}/{{ gitops_stack.name }}"

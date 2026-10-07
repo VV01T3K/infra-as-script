@@ -1,0 +1,34 @@
+- name: Find the declared repository by name
+  ansible.builtin.set_fact:
+    gitops_repo_matches: "{{ gitops_current.results[0].json.data | selectattr('name', 'eq', gitops_repository.name) | list }}"
+  no_log: true
+
+- name: Require an unambiguous repository name
+  ansible.builtin.assert:
+    that: gitops_repo_matches | length <= 1
+    fail_msg: Duplicate Arcane repository names must be resolved before reconciliation.
+    quiet: true
+
+- name: Create the public repository connection
+  ansible.builtin.uri:
+    url: "{{ arcane_api }}/customize/git-repositories"
+    method: POST
+    body: "{{ gitops_repository }}"
+    status_code: [200, 201]
+  when: gitops_repo_matches | length == 0
+  changed_when: true
+  no_log: true
+
+- name: Update the declared connection fields when different
+  ansible.builtin.uri:
+    url: "{{ arcane_api }}/customize/git-repositories/{{ gitops_repo_matches[0].id }}"
+    method: PUT
+    body: "{{ gitops_repository }}"
+  vars:
+    wanted: "{{ gitops_repository.keys() | list }}"
+    current: "{{ dict(wanted | zip(wanted | map('extract', gitops_repo_matches[0]))) }}"
+  when:
+    - gitops_repo_matches | length == 1
+    - current != gitops_repository
+  changed_when: true
+  no_log: true

@@ -1,0 +1,24 @@
+# Public source: Arcane never needs a GitHub credential or write access.
+gitops_repositories:
+  - name: infra-as-script
+    url: https://github.com/VV01T3K/infra-as-script.git
+    authType: none
+    enabled: true
+
+# Environment names are resolved against Arcane at runtime; zoltan uses ID 0.
+# No live applications or bootstrap projects are adopted here.
+gitops_stacks:
+  - name: gitops-canary
+    environment: engi
+    repository: infra-as-script
+    branch: main
+    composePath: services/engi/gitops-canary/compose.yaml
+    autoSync: "{{ gitops_canary_auto_sync | default(false) | bool }}"
+    syncInterval: 5
+    # The canary has no supporting files. Future apps can opt into directory sync.
+    syncDirectory: false
+    secrets:
+      CANARY_TOKEN: gitops_canary_token
+
+# Reconciliation alone never requests a sync. Enable after the source is pushed.
+gitops_sync_now: false

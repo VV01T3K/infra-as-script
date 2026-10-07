@@ -68,6 +68,12 @@ usage = 'arg "[ansible_args]..." help="Extra ansible-playbook options, e.g. --ta
 run = 'eval "scripts/with-fleet-key.sh scripts/with-service-secrets.sh ansible-playbook stages/5-services/main.yml ${usage_ansible_args:-}"'
 raw = true # interactive: two YubiKey touches (fleet key, service secrets)
 
+[tasks.gitops]
+description = "Reconcile Arcane GitOps repositories, stack mappings and SOPS-backed project secrets"
+usage = 'arg "[ansible_args]..." help="Extra options, e.g. -e gitops_sync_now=true" var=#true'
+run = 'eval "scripts/with-fleet-key.sh scripts/with-service-secrets.sh ansible-playbook stages/5-services/gitops.yml ${usage_ansible_args:-}"'
+raw = true # interactive: fleet key and service secrets require the YubiKey
+
 [tasks.inspect-storage]
 description = "Read only: disks, their health and the backup storage on the Proxmox machines (plus Research Cruise's database)"
 run = "scripts/with-fleet-key.sh ansible-playbook operations/inspect-storage.yml"

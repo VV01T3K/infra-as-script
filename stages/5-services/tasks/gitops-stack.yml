@@ -1,0 +1,203 @@
+- name: Resolve the repository and environment by name
+  ansible.builtin.set_fact:
+    gitops_repo_ids: "{{ gitops_repos.json.data | selectattr('name', 'eq', gitops_stack.repository) | map(attribute='id') | list }}"
+    gitops_environment_ids: >-
+      {{ ['0'] if gitops_stack.environment == inventory_hostname else
+         gitops_current.results[1].json.data | selectattr('name', 'eq', gitops_stack.environment) | map(attribute='id') | list }}
+  no_log: true
+
+- name: Require exactly one repository and target environment
+  ansible.builtin.assert:
+    that:
+      - gitops_repo_ids | length == 1
+      - gitops_environment_ids | length == 1
+      - gitops_stack.environment in groups.guests
+    fail_msg: The repository and guest environment must already exist with unique names.
+    quiet: true
+
+- name: Build the declared sync settings and secret overrides
+  ansible.builtin.set_fact:
+    gitops_environment_api: "{{ arcane_api }}/environments/{{ gitops_environment_ids[0] }}"
+    gitops_sync_body:
+      name: "{{ gitops_stack.name }}"
+      repositoryId: "{{ gitops_repo_ids[0] }}"
+      branch: "{{ gitops_stack.branch }}"
+      composePath: "{{ gitops_stack.composePath }}"
+      projectName: "{{ gitops_stack.name }}"
+      targetType: project
+      autoSync: "{{ gitops_stack.autoSync }}"
+      syncInterval: "{{ gitops_stack.syncInterval }}"
+      syncDirectory: "{{ gitops_stack.syncDirectory }}"
+      pullImageAfterSync: false
+      redeployAfterSync: false
+    gitops_env_content: |
+      {% for variable, secret in gitops_stack.secrets | default({}) | dictsort %}
+      {{ variable }}={{ service_secrets[secret] | to_json }}
+      {% endfor %}
+  no_log: true
+
+- name: Read existing sync mappings in the target environment
+  ansible.builtin.uri:
+    url: "{{ gitops_environment_api }}/gitops-syncs?limit=1000"
+  register: gitops_syncs
+  no_log: true
+
+- name: Find this mapping
+  ansible.builtin.set_fact:
+    gitops_sync_matches: "{{ gitops_syncs.json.data | selectattr('name', 'eq', gitops_stack.name) | list }}"
+  no_log: true
+
+- name: Reject duplicate names and adoption of backup mappings
+  ansible.builtin.assert:
+    that:
+      - gitops_sync_matches | length <= 1
+      - gitops_sync_matches | length == 0 or gitops_sync_matches[0].mode == 'deploy'
+    quiet: true
+
+- name: Create a mapping with automatic sync disabled until secrets are ready
+  ansible.builtin.uri:
+    url: "{{ gitops_environment_api }}/gitops-syncs"
+    method: POST
+    body: "{{ gitops_sync_body | combine({'autoSync': false, 'mode': 'deploy'}) }}"
+    status_code: [200, 201]
+  when: gitops_sync_matches | length == 0
+  changed_when: true
+  no_log: true
+
+- name: Refresh the mapping after creation
+  ansible.builtin.uri:
+    url: "{{ gitops_environment_api }}/gitops-syncs?limit=1000"
+  register: gitops_syncs
+  no_log: true
+
+- name: Record the mapping
+  ansible.builtin.set_fact:
+    gitops_mapping: "{{ gitops_syncs.json.data | selectattr('name', 'eq', gitops_stack.name) | first }}"
+    gitops_polling_paused: false
+  no_log: true
+
+- name: Reconcile mapping fields without enabling polling for an uninitialized project
+  ansible.builtin.uri:
+    url: "{{ gitops_environment_api }}/gitops-syncs/{{ gitops_mapping.id }}"
+    method: PUT
+    body: "{{ desired }}"
+  vars:
+    wanted: "{{ gitops_sync_body.keys() | list }}"
+    current: "{{ dict(wanted | zip(wanted | map('extract', gitops_mapping))) }}"
+    desired: >-
+      {{ gitops_sync_body | combine({'autoSync':
+         gitops_stack.autoSync | bool and gitops_mapping.autoSync | bool
+         and gitops_mapping.projectId | default('', true) | length > 0}) }}
+  when: current != desired
+  changed_when: true
+  no_log: true
+
+- name: Sync from Git only when explicitly requested
+  ansible.builtin.uri:
+    url: "{{ gitops_environment_api }}/gitops-syncs/{{ gitops_mapping.id }}/sync"
+    method: POST
+  when: gitops_sync_now | bool
+  register: gitops_sync_result
+  changed_when: false
+  no_log: true
+
+- name: Require a successful sync result
+  ansible.builtin.assert:
+    that: gitops_sync_result.json.data.success
+    fail_msg: Arcane could not sync the declared source. Check its GitOps status for details.
+    quiet: true
+  when: gitops_sync_now | bool
+
+- name: Read the mapping including its linked project
+  ansible.builtin.uri:
+    url: "{{ gitops_environment_api }}/gitops-syncs/{{ gitops_mapping.id }}"
+  register: gitops_mapping_now
+  no_log: true
+
+- name: Reconcile project secrets after the first sync creates the project
+  when: gitops_mapping_now.json.data.projectId | default('', true) | length > 0
+  block:
+    - name: Read the current project environment
+      ansible.builtin.uri:
+        url: "{{ gitops_environment_api }}/projects/{{ gitops_mapping_now.json.data.projectId }}/compose"
+      register: gitops_project
+      no_log: true
+
+    - name: Pause polling before changing secrets
+      ansible.builtin.uri:
+        url: "{{ gitops_environment_api }}/gitops-syncs/{{ gitops_mapping.id }}"
+        method: PUT
+        body: { autoSync: false }
+      when:
+        - gitops_mapping_now.json.data.autoSync
+        - gitops_project.json.data.envContent != gitops_env_content
+      register: gitops_pause
+      changed_when: true
+      no_log: true
+
+    - name: Record whether polling was paused
+      ansible.builtin.set_fact:
+        gitops_polling_paused: "{{ gitops_pause is not skipped }}"
+
+    - name: Set the declared project environment overrides
+      ansible.builtin.uri:
+        url: "{{ gitops_environment_api }}/projects/{{ gitops_mapping_now.json.data.projectId }}"
+        method: PUT
+        body:
+          envContent: "{{ gitops_env_content }}"
+      when: gitops_project.json.data.envContent != gitops_env_content
+      changed_when: true
+      no_log: true
+
+    - name: Verify a second sync preserves the secret overrides
+      ansible.builtin.uri:
+        url: "{{ gitops_environment_api }}/gitops-syncs/{{ gitops_mapping.id }}/sync"
+        method: POST
+      when: gitops_sync_now | bool
+      register: gitops_second_sync
+      changed_when: false
+      no_log: true
+
+    - name: Require a successful second sync
+      ansible.builtin.assert:
+        that: gitops_second_sync.json.data.success
+        quiet: true
+      when: gitops_sync_now | bool
+
+    - name: Read the environment after sync
+      ansible.builtin.uri:
+        url: "{{ gitops_environment_api }}/projects/{{ gitops_mapping_now.json.data.projectId }}/compose"
+      register: gitops_project_after
+      no_log: true
+
+    - name: Confirm the secret overrides survived
+      ansible.builtin.assert:
+        that: gitops_project_after.json.data.envContent == gitops_env_content
+        fail_msg: Git sync did not preserve the declared secret overrides.
+        quiet: true
+      no_log: true
+
+- name: Require an initialized project before enabling polling
+  ansible.builtin.assert:
+    that: gitops_mapping_now.json.data.projectId | default('', true) | length > 0
+    fail_msg: Run with -e gitops_sync_now=true after publishing the source before enabling polling.
+    quiet: true
+  when: gitops_stack.autoSync | bool
+
+- name: Enable polling after the project and secrets have been verified
+  ansible.builtin.uri:
+    url: "{{ gitops_environment_api }}/gitops-syncs/{{ gitops_mapping.id }}"
+    method: PUT
+    body: { autoSync: true }
+  when:
+    - gitops_stack.autoSync | bool
+    - not gitops_mapping_now.json.data.autoSync or gitops_polling_paused
+  changed_when: true
+  no_log: true
+
+- name: Verify only the isolated engi canary when requested
+  ansible.builtin.include_tasks: gitops-canary.yml
+  when:
+    - gitops_verify_canary | default(false) | bool
+    - gitops_stack.environment == 'engi'
+    - gitops_stack.name == 'gitops-canary'

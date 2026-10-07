@@ -1,0 +1,74 @@
+- name: Require a synced canary before deploying it
+  ansible.builtin.assert:
+    that: gitops_mapping_now.json.data.projectId | default('', true) | length > 0
+    fail_msg: Run with -e gitops_sync_now=true after publishing the canary source.
+    quiet: true
+
+- name: Read the canary runtime
+  ansible.builtin.uri:
+    url: "{{ gitops_environment_api }}/projects/{{ gitops_mapping_now.json.data.projectId }}/runtime"
+  register: gitops_canary_runtime
+  no_log: true
+
+- name: Start the isolated canary if it is stopped
+  ansible.builtin.uri:
+    url: "{{ gitops_environment_api }}/projects/{{ gitops_mapping_now.json.data.projectId }}/up"
+    method: POST
+    body: {}
+    timeout: 120
+  when: gitops_canary_runtime.json.data.runningCount == 0
+  changed_when: true
+  no_log: true
+
+- name: Find only the canary container on engi
+  ansible.builtin.command:
+    argv:
+      - docker
+      - ps
+      - --all
+      - --quiet
+      - --filter
+      - label=com.docker.compose.project=gitops-canary
+      - --filter
+      - label=com.docker.compose.service=canary
+  delegate_to: engi
+  register: gitops_canary_ids
+  changed_when: false
+
+- name: Require exactly one canary container
+  ansible.builtin.assert:
+    that: gitops_canary_ids.stdout_lines | length == 1
+    quiet: true
+
+- name: Wait for canary health without exposing its environment
+  ansible.builtin.command:
+    argv: [docker, inspect, "{{ gitops_canary_ids.stdout_lines[0] }}"]
+  delegate_to: engi
+  register: gitops_canary_inspect
+  changed_when: false
+  until: (gitops_canary_inspect.stdout | from_json)[0].State.Health.Status == 'healthy'
+  retries: 12
+  delay: 5
+  no_log: true
+
+- name: Verify token, revision and isolation without printing secrets
+  ansible.builtin.assert:
+    that:
+      - "'CANARY_TOKEN=' ~ service_secrets.gitops_canary_token in container.Config.Env"
+      - "'CANARY_REVISION=' ~ source.services.canary.environment.CANARY_REVISION in container.Config.Env"
+      - container.HostConfig.NetworkMode == 'none'
+      - container.HostConfig.ReadonlyRootfs
+      - container.Mounts | length == 0
+      - container.HostConfig.PortBindings | default({}, true) | length == 0
+    quiet: true
+  vars:
+    container: "{{ (gitops_canary_inspect.stdout | from_json)[0] }}"
+    source: "{{ lookup('ansible.builtin.file', repo ~ '/services/engi/gitops-canary/compose.yaml') | from_yaml }}"
+  no_log: true
+
+- name: Report the nonsecret canary verification result
+  ansible.builtin.debug:
+    msg: >-
+      Canary healthy on engi; secret and revision verified, no ports or storage,
+      network disabled. Container {{ gitops_canary_ids.stdout_lines[0] }};
+      source commit {{ gitops_mapping_now.json.data.lastSyncCommit }}.

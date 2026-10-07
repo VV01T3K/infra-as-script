@@ -63,6 +63,15 @@ Secrets: `secrets/services.sops.yaml` (Arcane, Technitium, Cloudflare token, NAS
 
 PDM connectivity is complete. Its role includes audit, guest power management and migration privileges, but cross-node remote migration needs broader permissions and remains a later task; dashboard health does not verify it.
 
+### Arcane GitOps implementation (2026-10-07, live verification pending)
+
+- Owner confirmed `infra-as-script` is now public: use anonymous HTTPS, no deploy key or GitHub credential. Research Cruise repository access remains separate, for its later migration.
+- Added independent `mise run gitops` (`stages/5-services/gitops.yml`), declarative repository/environment mappings in `gitops-config.yml`, and an isolated `services/engi/gitops-canary/compose.yaml`. Platform bootstrap and live apps are untouched.
+- Polling defaults off. Source must be published before `mise run gitops -e gitops_sync_now=true -e gitops_verify_canary=true`. That run syncs, injects a SOPS-backed canary token, verifies a second sync preserves it, then starts only the canary and checks health, revision, token and isolation without printing secrets. See `services/README.md` for changed-source, unchanged-source, polling and rollback checks.
+- Running manager `/api/version` confirms v2.15.0; its public OpenAPI schema matches the inspected tagged source. A running project can redeploy after changed content even with `redeployAfterSync=false`; stopped projects stay stopped by default. No Git write-back/backup mode is enabled.
+- Offline API-fixture checks passed: initial creation, idempotent reruns with/without polling, token preservation, polling pause during secret repair, sync failures and duplicate-name rejection. Compose validation and local isolated Alpine container smoke check passed. Live sync/deployment has not yet run.
+- PDM connectivity remains verified. No network apply, live-app migration or guest retirement is part of this work.
+
 ### Lessons (do not repeat)
 - Proxmox ACLs: a grant on a deeper path **replaces** the inherited one for that path; repeat every needed privilege. Never approve a plan that differs from the expected one.
 - Plays must target exact hosts/groups (`hosts: vms` ran OMV setup on a second VM).
