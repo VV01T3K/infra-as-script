@@ -4,23 +4,23 @@ Prepared 2026-10-05. This document records the user's agreed target and implemen
 
 ## Next-session quick start (2026-10-07)
 
-**Resume with Arcane GitOps planning, not PDM debugging or another network apply.** The owner confirmed a healthy PDM dashboard after the firewall fix. No GitOps implementation was started in this session.
+**Arcane GitOps foundation is implemented and verified. Resume with retained-application migration planning, not PDM debugging, another network apply or repeating the canary setup.** The public repository uses anonymous HTTPS; the isolated canary on engi has verified manual sync, secret preservation, unchanged-sync behavior and automatic five-minute polling.
 
 ### Repository checkpoint
-- Working directory: `/home/wojtek/Projects/infra-as-script`; remote: private `VV01T3K/infra-as-script`.
-- Verified before this handoff update: local `main` and GitHub `main` both at `6fc3121` (`chore(gitignore): ignore report log`), with no pending tracked changes. The earlier GitHub internal-server errors no longer leave the deployment commits unpublished.
-- `8e20bcf`: combined PDM/Debian support, Caddy web routes, CLIProxyAPI, Arcane v2.15.0 and CPU-reporting fixes.
-- `1462ad5`: PDM's UniFi API access rule, preserved device icons, encrypted network state and this migration handoff.
-- `6fc3121`: ignores `report.log`; leave the owner's file alone. This quick-start revision will be a subsequent documentation-only commit; use `git log` for its ID and recheck local/remote status rather than assuming it was pushed.
+- Working directory: `/home/wojtek/Projects/infra-as-script`; remote: public `VV01T3K/infra-as-script` (owner confirmed public access).
+- GitOps code and encrypted canary token are published through `485d7a2`. This closeout updates documentation afterward; use `git log` and recheck local/remote status for the latest checkpoint.
+- `1a09613`: independent GitOps reconciliation, declared mappings and isolated canary. `cc4799d` / `f32fbff`: agent repository propagation and handling omitted empty API fields. `485d7a2`: canary revision 2 and five-minute polling enabled.
+- Existing PDM/services/network deployments remain unchanged. Leave the owner's ignored `report.log` alone.
 
 ### First actions
 1. Read this quick start, the current-state summary and the lessons below; older "not run yet" entries are chronological history, not a fresh to-do list.
 2. Check `git status --short --branch` and recent commits before editing. Coordinate one writer at a time; stage only intended files.
-3. Inspect the installed Arcane v2.15.0 GitOps documentation/API and this repo's service bootstrap. Inspect current `komoda-homelab` definitions separately; don't assume the old temporary checkout still exists or is current.
-4. Present a short GitOps implementation plan before writing code: choose the repository/stack layout, read-only GitHub deploy-key handling through SOPS, per-environment mappings and secrets, sync behaviour, and a harmless end-to-end verification. Manager/Caddy bootstrap remains independent of Arcane GitOps.
-5. Do not migrate live apps or retire guests as part of that first GitOps step. Research Cruise remains live on externum; its verified backup exists on both backup disks, but nightly automation and off-site copying are not implemented.
+3. Read `services/README.md` and the GitOps implementation summary below. Arcane's running version and OpenAPI schema were confirmed as v2.15.0. `komoda-homelab` was freshly inspected at main `2cb9b50`; recheck upstream before migrating apps rather than assuming the temporary checkout still exists.
+4. Present a short retained-app migration plan before implementation: data preservation, stack dependencies, per-environment secret mappings, proxy/access controls, cutover and rollback. Manager/Caddy bootstrap remains independent of application GitOps. Research Cruise repository access is a separate later step.
+5. Do not retire old guests before migrations, replacement health and recovery are verified. Research Cruise remains live on externum; its verified backup exists on both backup disks, but nightly automation and off-site copying are not implemented.
 
 ### Verified and unverified boundaries
+- GitOps canary revision 2 is healthy on engi, with no ports, mounts or network access. Manual sync preserved its SOPS-backed token; unchanged sync kept the container. Automatic polling recreated it for the published revision without a manual sync; post-polling reconciliation returned changed=0. Only the canary is mapped; live apps have not migrated.
 - Owner's PDM screenshot confirms all remotes reachable, kestrel/torus online, 1 VM and 9 LXCs running. Guest start/stop and cross-node migration were not exercised; broader cross-node migration permissions are deferred.
 - No additional infrastructure apply was run during closeout. `mise run check`, both `tofu validate` roots and the commit's secret scan passed. Network state was confirmed encrypted without decrypting it.
 - The preview opened the PDM login screen, but the owner chose to provide a screenshot instead of signing in there. Do not ask them to paste credentials.
@@ -46,6 +46,7 @@ The sections after this summary are the original plan (2026-10-05) and a dated p
 Secrets: `secrets/services.sops.yaml` (Arcane, Technitium, Cloudflare token, NAS passwords, PDM tokens/root password, CLIProxyAPI keys), `secrets/tofu.sops.yaml`, `secrets/fleet-ssh-key.sops.yaml`, per-host root passwords. Live Ansible/OpenTofu operations use the repo wrappers and require the owner's YubiKey PIN/touches to decrypt credentials; coordinate those runs with them. Offline lint/format/validation and Git operations do not require secret decryption. Do not expose plaintext credentials in logs, commits or chat.
 
 ### Done
+- Arcane GitOps foundation: anonymous public-repository access, declarative environment/stack mappings, SOPS-backed project overrides, isolated engi canary, verified automatic five-minute polling and idempotent reruns. See the implementation summary below.
 - Step 1 (stage 1–2 safety fixes), step 2 for Arcane (HTTPS through Caddy; router stays `allow_insecure`, owner's choice), step 3 (disk inspection; Research Cruise backup `ResearchCruiseApp-20261005-2234Z.bak` on both backup disks, test-restored), step 4 (zoltan/engi, Arcane on zoltan, OMV VM `nas`), step 5 chunk 1 (OMV data disk, user/share `wojtek`).
 - PDM in a Debian LXC, PDM and OMV HTTPS web routes through Caddy with pinned backend certificates, CLIProxyAPI, Arcane v2.15.0 and CPU reporting fixes: deployed; combined in commit `8e20bcf`. Services re-run changed=0; PDM/OMV routes verified from the laptop.
 - PDM router access fixed 2026-10-07: UniFi allows only inventory `api_from` (currently pdm, 10.20.0.11) to the Proxmox machines (10.1.0.2, 10.1.0.30) on TCP 8006, with return traffic. Owner applied exactly 1 added / 0 changed / 0 destroyed. Their dashboard screenshot confirms all remotes reachable, 2 nodes online, 1 VM and 9 LXCs running. Guest power operations and cross-node migration were not tested.
@@ -56,20 +57,20 @@ Secrets: `secrets/services.sops.yaml` (Arcane, Technitium, Cloudflare token, NAS
 - Research Cruise nightly DB backup, alerts/notifications, off-site copy: unresolved, later.
 
 ### Next
-1. **Arcane GitOps:** short plan before implementation; read-only deploy key, repository connections, per-environment stacks and secrets, then verify a harmless sync using the installed version's semantics.
-2. Migrate retained apps from komoda-homelab (step 6), then Research Cruise staging onto zoltan, preserving data and rollback.
+1. Migrate retained apps from komoda-homelab (step 6), preserving data and rollback; plan the dependency and access-control changes first.
+2. Migrate Research Cruise staging onto zoltan, with separate repository access, data preservation and rollback.
 3. Arcane backup to S3 (implementation and storage mount still to choose), with a tested restore. Research Cruise scheduled backups and an independent off-site copy remain unresolved.
 4. Retire the old guests (step 7) only after migration, replacement health and recovery are verified; decide what happens to tailscale-box and excluded-app data first.
 
 PDM connectivity is complete. Its role includes audit, guest power management and migration privileges, but cross-node remote migration needs broader permissions and remains a later task; dashboard health does not verify it.
 
-### Arcane GitOps implementation (2026-10-07, automatic polling verification pending)
+### Arcane GitOps implementation (2026-10-07, verified)
 
 - Owner confirmed `infra-as-script` is now public: use anonymous HTTPS, no deploy key or GitHub credential. Research Cruise repository access remains separate, for its later migration.
 - Added independent `mise run gitops` (`stages/5-services/gitops.yml`), declarative repository/environment mappings in `gitops-config.yml`, and an isolated `services/engi/gitops-canary/compose.yaml`. Platform bootstrap and live apps are untouched.
 - Initial mapping was created with polling off. Source must be published before `mise run gitops -e gitops_sync_now=true -e gitops_verify_canary=true`. That run syncs, injects a SOPS-backed canary token, verifies a second sync preserves it, then starts only the canary and checks health, revision, token and isolation without printing secrets. Baseline live checks passed; polling is now enabled for the canary and preserved by its declaration. See `services/README.md` for verification and rollback checks.
 - Running manager `/api/version` confirms v2.15.0; its public OpenAPI schema matches the inspected tagged source. A running project can redeploy after changed content even with `redeployAfterSync=false`; stopped projects stay stopped by default. No Git write-back/backup mode is enabled.
-- Offline API-fixture checks passed: initial creation, idempotent reruns with/without polling, token preservation, polling pause during secret repair, sync failures and duplicate-name rejection. Compose validation and local isolated Alpine container smoke check passed. Live canary revision 1 deployed healthy on engi (container `75da9224be67`, source `f32fbff`); unchanged sync and reconciliation both returned changed=0 and kept that container. Token survived sync; no ports, mounts or network access. Publishing revision 2 to verify automatic polling next.
+- Offline API-fixture checks passed: initial creation, idempotent reruns with/without polling, token preservation, polling pause during secret repair, sync failures and duplicate-name rejection. Compose validation and local isolated Alpine container smoke check passed. Live canary revision 1 deployed healthy on engi (container `75da9224be67`, source `f32fbff`); unchanged sync and reconciliation both returned changed=0 and kept that container. Token survived sync; no ports, mounts or network access. Automatic five-minute polling then deployed revision 2 from `485d7a2` without a manual sync, recreating the canary as `bccc429a5ab0`; health, unchanged token and isolation all passed. Post-polling reconciliation returned changed=0.
 - Arcane v2.15.0 needs manager repository configuration propagated to an agent before creating its mapping (use the supported environment resource-sync endpoint). Empty project envContent/runningCount may be omitted from responses; handle missing values as empty/zero. Both live-discovered cases are fixed in the playbook.
 - PDM connectivity remains verified. No network apply, live-app migration or guest retirement is part of this work.
 

@@ -14,8 +14,9 @@ Commit only nonsecret configuration. Private application repositories such as
 Research Cruise need their own access configuration before being added.
 
 `mise run gitops` reconciles declared connections and mappings without fetching
-stack content. It leaves unrelated repositories, projects and syncs alone and
-never removes them. Do not map an existing live project during this initial step.
+stack content. It does not explicitly delete undeclared manager repositories,
+projects or syncs. Arcane resource propagation treats the manager repository
+configuration as authoritative on agents. Do not map an existing live project during this initial step.
 Each declared stack's `secrets` dictionary maps environment variable names to
 keys in `secrets/services.sops.yaml`. The playbook owns that project's complete
 environment override content. It sends secrets to Arcane through its API;
