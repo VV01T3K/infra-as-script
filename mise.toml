@@ -107,7 +107,7 @@ run = "scripts/with-fleet-key.sh ansible-playbook operations/inspect-storage.yml
 raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
 
 [tasks.research-cruise-backup]
-description = "Back up Research Cruise's live database (on externum) to both backup disks and prove it by a test restore on zoltan"
+description = "Back up Research Cruise's live database (on zoltan) to both backup disks and prove it by a test restore on zoltan"
 run = "scripts/with-fleet-key.sh ansible-playbook operations/research-cruise-backup.yml"
 raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
 

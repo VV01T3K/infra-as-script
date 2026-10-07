@@ -71,7 +71,7 @@ gitops_stacks:
     repository: research-cruise
     branch: staging
     composePath: docker/arcane/compose.yaml
-    autoSync: false # enable after restore, cutover and deployment verification
+    autoSync: true # restored database, public origin and protection verified
     syncInterval: 5
     syncDirectory: false
     secrets:

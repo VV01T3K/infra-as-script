@@ -1,14 +1,16 @@
 # Research Cruise: a real SQL Server backup of the live database, kept on both backup disks, and proven by
 # restoring it into a throwaway SQL Server.
 # Run: mise run research-cruise-backup
+# Defaults to zoltan/kestrel after migration. For an old-source cutover backup:
+#   -e cruise_backup_source_node=torus -e cruise_backup_source_guest=externum
 #
 # What it does, where:
-#   externum (old guest on torus) counts the rows of every table, then makes a COPY_ONLY backup: reading only,
-#     the database and its own backup history stay as they are. The file goes to torus's storage "backup"
-#     (research-cruise/) and leaves externum again.
-#   kestrel gets a second copy on its storage "backup" (research-cruise/), checksum compared.
-#   zoltan restores it into a temporary SQL Server of the same version, without any network (no app, no mail),
-#     checks it (DBCC CHECKDB) and compares the row counts; then the temporary server and its files are deleted.
+#   The selected live guest (zoltan on kestrel by default) counts every table,
+#   makes a COPY_ONLY native backup with checksums, and verifies it. Its node keeps
+#   the file on mounted storage "backup"; the temporary file leaves the guest.
+#   The other Proxmox node gets a checksum-identical second copy.
+#   zoltan restores it into a temporary CU23 SQL Server without a network, runs
+#   DBCC CHECKDB, compares every table count, and removes the temporary server.
 # The backup passes through build/ on this computer (ignored by git) and is deleted there at the end.
 # Passwords: the live one is used inside its container only; the temporary one is random and thrown away.
 
@@ -19,6 +21,13 @@
   vars:
     repo: "{{ playbook_dir | dirname }}"
   tasks:
+    - name: Require both mounted backup disks before writing backups
+      ansible.builtin.command:
+        argv: [mountpoint, '-q', /mnt/pve/backup]
+      delegate_to: "{{ item }}"
+      loop: [torus, kestrel]
+      changed_when: false
+
     - name: Pick the file name (UTC time), a local folder for the copy in transit, and the row-count query
       ansible.builtin.set_fact:
         bak: ResearchCruiseApp-{{ now(utc=true, fmt='%Y%m%d-%H%M') }}Z.bak
@@ -39,7 +48,7 @@
       loop: [absent, directory]
       delegate_to: localhost
 
-- name: Back up the live database (externum on torus)
+- name: Back up the live database (zoltan on kestrel by default)
   hosts: torus
   gather_facts: false
   vars:
@@ -51,15 +60,15 @@
       'exec /opt/mssql-tools18/bin/sqlcmd -S 127.0.0.1 -U sa -P "${MSSQL_SA_PASSWORD:-$SA_PASSWORD}" -C -b -h -1 -W -s "|" -Q "$0"'
       "SET NOCOUNT ON; $1"; }
   tasks:
-    - name: Find externum's guest ID
+    - name: Find the selected live database guest
       ansible.builtin.shell: |
         set -o pipefail
         pct list | awk -v name="$SOURCE_NAME" '$NF == name {print $1}'
       args:
         executable: /bin/bash
       environment:
-        SOURCE_NAME: "{{ cruise_backup_source_guest | default('externum') }}"
-      delegate_to: "{{ cruise_backup_source_node | default('torus') }}"
+        SOURCE_NAME: "{{ cruise_backup_source_guest | default('zoltan') }}"
+      delegate_to: "{{ cruise_backup_source_node | default('kestrel') }}"
       register: externum
       changed_when: false
       failed_when: externum.stdout | length == 0
@@ -79,14 +88,14 @@
         executable: /bin/bash
       environment:
         GUEST: "{{ externum.stdout }}"
-      delegate_to: "{{ cruise_backup_source_node | default('torus') }}"
+      delegate_to: "{{ cruise_backup_source_node | default('kestrel') }}"
       register: live_counts
       changed_when: true
 
-    - name: Move the file out of externum to the storage "backup" (research-cruise/)
+    - name: Move the file out of the selected guest to the storage "backup" (research-cruise/)
       ansible.builtin.shell: |
         set -euo pipefail
-        mkdir -p /mnt/pve/backup/research-cruise
+        install -d -m 700 /mnt/pve/backup/research-cruise
         pct pull "$GUEST" "{{ volume }}/backup/{{ bak }}" "/mnt/pve/backup/research-cruise/{{ bak }}"
         chmod 600 "/mnt/pve/backup/research-cruise/{{ bak }}"
         pct exec "$GUEST" -- rm "{{ volume }}/backup/{{ bak }}"
@@ -95,7 +104,7 @@
         executable: /bin/bash
       environment:
         GUEST: "{{ externum.stdout }}"
-      delegate_to: "{{ cruise_backup_source_node | default('torus') }}"
+      delegate_to: "{{ cruise_backup_source_node | default('kestrel') }}"
       register: torus_copy
       changed_when: true
 
@@ -104,10 +113,10 @@
         src: /mnt/pve/backup/research-cruise/{{ bak }}
         dest: "{{ hostvars.torus.transit }}/{{ bak }}"
         flat: true
-      delegate_to: "{{ cruise_backup_source_node | default('torus') }}"
+      delegate_to: "{{ cruise_backup_source_node | default('kestrel') }}"
 
-- name: Keep a second copy on kestrel
-  hosts: "{{ 'torus' if cruise_backup_source_node | default('torus') == 'kestrel' else 'kestrel' }}"
+- name: Keep a second copy on the other backup disk
+  hosts: "{{ 'torus' if cruise_backup_source_node | default('kestrel') == 'kestrel' else 'kestrel' }}"
   gather_facts: false
   vars:
     bak: "{{ hostvars.torus.bak }}"
@@ -124,7 +133,7 @@
         dest: /mnt/pve/backup/research-cruise/{{ bak }}
         mode: "0600"
 
-    - name: Check that it is identical to torus's copy
+    - name: Check that it is identical to the primary backup copy
       ansible.builtin.command: sha256sum /mnt/pve/backup/research-cruise/{{ bak }}
       register: kestrel_sum
       changed_when: false

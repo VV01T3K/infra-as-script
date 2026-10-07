@@ -33,14 +33,17 @@ def probe(address, host, path='/'):
             return {'status': response.status, 'certificate_sha256': fingerprint}
 
 
-def routes(domain):
-    return {f'arcane.{domain}': '/', f'cliproxy.{domain}': '/management.html',
+def routes(domain, extra_host=None):
+    result = {f'arcane.{domain}': '/', f'cliproxy.{domain}': '/management.html',
             f'pdm.{domain}': '/', f'omv.{domain}': '/'}
+    if extra_host:
+        result[extra_host] = '/api/version'
+    return result
 
 
-def baseline(domain, name='caddy'):
+def baseline(domain, name='caddy', extra_host=None):
     address = container(name)['NetworkSettings']['Networks']['caddy']['IPAddress']
-    return {host: probe(address, host, path) for host, path in routes(domain).items()}
+    return {host: probe(address, host, path) for host, path in routes(domain, extra_host).items()}
 
 
 def handlers(route):
@@ -61,7 +64,7 @@ def matched_routes(route):
             yield from matched_routes(nested)
 
 
-def verify(domain, name='caddy', expected=None, require_parsing=True):
+def verify(domain, name='caddy', expected=None, require_parsing=True, extra_host=None):
     caddy = container(name)
     assert caddy['State']['Running'] and caddy['RestartCount'] == 0
     config = json.loads(run(['docker', 'exec', name, 'wget', '-qO-', 'http://127.0.0.1:2019/config/']))
@@ -74,12 +77,12 @@ def verify(domain, name='caddy', expected=None, require_parsing=True):
         for route in server.get('routes', []):
             for hosts, chain in matched_routes(route):
                 for host in hosts:
-                    if host in routes(domain):
+                    if host in routes(domain, extra_host):
                         assert 'crowdsec' in chain and 'reverse_proxy' in chain, 'Handler missing: ' + host
                         assert chain.index('crowdsec') < chain.index('reverse_proxy'), 'Protection runs after proxy'
                         secured.add(host)
-    assert secured == set(routes(domain)), 'A retained route lacks protection'
-    actual = baseline(domain, name)
+    assert secured == set(routes(domain, extra_host)), 'A retained route lacks protection'
+    actual = baseline(domain, name, extra_host)
     assert all(200 <= entry['status'] < 500 for entry in actual.values()), 'An upstream failed'
     if expected:
         assert actual == expected, 'Route status or certificate changed'
@@ -91,7 +94,7 @@ def verify(domain, name='caddy', expected=None, require_parsing=True):
                   'export REDISCLI_AUTH="$VALKEY_PASSWORD"; valkey-cli --raw CONFIG GET maxmemory-policy'])
     assert memory.strip().splitlines()[-1] == 'noeviction'
 
-    host = 'arcane.' + domain
+    host = extra_host or 'arcane.' + domain
     address = caddy['NetworkSettings']['Networks']['caddy']['IPAddress']
     fixture = 'infra-proxy-check-' + uuid.uuid4().hex[:10]
     ip = None
@@ -154,4 +157,5 @@ def verify(domain, name='caddy', expected=None, require_parsing=True):
 if __name__ == '__main__':
     expected_path = Path('/opt/caddy-security-candidate/baseline.json')
     expected = json.loads(expected_path.read_text()) if expected_path.exists() else None
-    verify(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else 'caddy', expected)
+    verify(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else 'caddy', expected,
+           extra_host=sys.argv[3] if len(sys.argv) > 3 else None)

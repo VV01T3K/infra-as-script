@@ -10,8 +10,8 @@ before creating its first mapping; background propagation alone can race
 mapping creation in Arcane v2.15.0.
 
 The infrastructure repository is public and uses anonymous HTTPS access.
-Commit only nonsecret configuration. Private application repositories such as
-Research Cruise need their own access configuration before being added.
+Commit only nonsecret configuration. Research Cruise is also public and uses its own anonymous repository connection;
+its Compose and build workflow remain in that repository.
 
 `mise run gitops` reconciles declared connections and mappings without fetching
 stack content. It does not explicitly delete undeclared manager repositories,
@@ -72,7 +72,7 @@ The original is stopped on externum, and both hosts hold protected backups.
 Polling remains disabled until automatic build behavior is verified. See
 `services/zoltan/frog-keepalive/README.md` for cutover and rollback commands.
 `gitops_only_stack=frog-keepalive` limits reconciliation to this stack and rejects
-unknown names. CloudBeaver remains stopped until the Research Cruise migration.
+unknown names. CloudBeaver remains stopped by the owner's latest decision.
 
 The manager's project directory is owned by its application UID/GID 65532, with
 mode 0700. Bootstrap and GitOps reconcile this ownership; bootstrap Compose
@@ -95,7 +95,7 @@ Both services have no published ports. Valkey is on the internal `caddy_security
 network; CrowdSec also has an outbound network for its community API and collections.
 Certificate storage uses `noeviction`. Polling stays disabled during migration.
 Caddy integration is a separate step after replacement health is verified.
-CloudBeaver remains stopped on externum until Research Cruise migrates.
+CloudBeaver remains stopped on externum; its workspace is preserved.
 
 `mise run integrate-proxy-security -e security_prepare_only=true` builds and tests
 an unpublished Caddy candidate, imports current certificates without reissuing them,
@@ -112,5 +112,31 @@ Caddy/Arcane before restoring application data. Subsequent Caddy changes use the
 normal platform bootstrap, rather than importing the old filesystem assets again.
 
 The existing tunnel includes `cruise.wsiwiec.com -> https://caddy` on externum.
-Cloudflared must remain there until Research Cruise has a verified replacement origin.
+Research Cruise now has a verified origin on zoltan. A temporary TLS-verified relay
+on externum carries the existing tunnel traffic until Cloudflared migrates.
 CloudBeaver is still stopped and has no published ports.
+
+## Research Cruise
+
+The separate public `ResearchCruiseApp` repository owns `docker/arcane/compose.yaml`
+on `staging`. The build workflow publishes immutable frontend/backend digests back
+into that file; Arcane polling redeploys the running project from those commits.
+Infrastructure owns the repository mapping and preserved SOPS-backed overrides.
+The deployment gate `ARCANE_STAGING_READY=true` is enabled after verified cutover.
+
+`mise run prepare-research-cruise` restores a private candidate with no external
+network or public route. `mise run migrate-research-cruise` is a guarded one-time
+cutover: freeze source writes, test a fresh two-disk native backup, restore and compare
+all tables, verify the new origin, then open a TLS-verified old-tunnel relay. Before
+traffic opens, failure restores the original writers; after that boundary, keep the
+new database authoritative and preserve new writes before any rollback.
+
+The migration is verified, including a subsequent CI-published image deployment.
+SQL Server uses an internal network and a restored external volume, with no published
+port. CloudBeaver remains stopped and unexposed by the owner's latest decision.
+`mise run research-cruise-backup` now backs up zoltan by default, requires both mounted
+backup disks, and proves the backup with an isolated SQL restore, DBCC CHECKDB and all
+table counts. Scheduled and off-site backups remain later work.
+
+Cloudflared still runs on externum. Keep its Caddy/relay dependencies until the tunnel
+is moved, ingress is narrowed to retained routes, and client-IP trust is verified.

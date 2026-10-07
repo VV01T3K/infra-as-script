@@ -100,7 +100,11 @@
           failed_when: cruise_outbox.stdout | trim != '0'
         - name: Make a fresh two-disk native backup and test its restore
           ansible.builtin.command:
-            argv: [ansible-playbook, operations/research-cruise-backup.yml, '-e', "bak={{ cruise_bak }}"]
+            argv:
+              - ansible-playbook
+              - operations/research-cruise-backup.yml
+              - '-e'
+              - "bak={{ cruise_bak }} cruise_backup_source_node=torus cruise_backup_source_guest=externum"
             chdir: "{{ repo }}"
           delegate_to: localhost
           vars:
@@ -219,6 +223,7 @@
                   proxy_ssl_server_name on;
                   proxy_ssl_name cruise.wsiwiec.com;
                   proxy_ssl_verify on;
+                  proxy_ssl_verify_depth 5;
                   proxy_ssl_trusted_certificate /etc/ssl/cert.pem;
                 }
               }
