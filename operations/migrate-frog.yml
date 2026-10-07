@@ -1,0 +1,279 @@
+# One-time, state-preserving cutover. Source volumes and two host backups remain
+# available. A failed cutover stops the replacement and restarts the original.
+# Publish the Frog source first. Run through `mise run migrate-frog`.
+- name: Migrate Frog keepalive from externum to zoltan
+  hosts: zoltan
+  gather_facts: false
+  vars_files: [../stages/5-services/gitops-config.yml]
+  vars:
+    repo: "{{ playbook_dir | dirname }}"
+    arcane_api: http://127.0.0.1:3552/api
+    gitops_only_stack: frog-keepalive
+    gitops_sync_now: true
+    frog_compose: /opt/arcane/projects/frog-keepalive/compose.yaml
+    frog_volumes:
+      - { old: frog-keepalive_frog_keepalive_ssh, new: frog_keepalive_ssh }
+      - { old: frog-keepalive_frog_keepalive_data, new: frog_keepalive_data }
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        X-Api-Key: "{{ service_secrets.arcane_api_key }}"
+      body_format: json
+  tasks:
+    - name: Find externum on torus
+      ansible.builtin.shell: |
+        set -o pipefail
+        pct list | awk '$NF == "externum" && $2 == "running" {print $1}'
+      args:
+        executable: /bin/bash
+      delegate_to: torus
+      register: frog_guest
+      changed_when: false
+      failed_when: frog_guest.stdout_lines | length != 1
+
+    - name: Read the original container without exposing its environment
+      ansible.builtin.command:
+        argv: [pct, exec, "{{ frog_guest.stdout }}", '--', docker, inspect, frog-keepalive-frog-keepalive-1]
+      delegate_to: torus
+      register: frog_original
+      changed_when: false
+      no_log: true
+
+    - name: Read unlocked secrets and retain the original settings
+      ansible.builtin.set_fact:
+        service_secrets: "{{ lookup('ansible.builtin.env', 'SERVICE_SECRETS') | default('{}', true) | from_json }}"
+        frog_environment: "{{ dict((frog_original.stdout | from_json)[0].Config.Env | map('split', '=', 1)) }}"
+        frog_backup: /mnt/pve/backup/frog-keepalive/{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}
+        frog_transit: "{{ repo }}/build/frog-migration"
+      no_log: true
+
+    - name: Require a running source with the expected persistent volumes
+      ansible.builtin.assert:
+        that:
+          - (frog_original.stdout | from_json)[0].State.Running
+          - >-
+            (frog_original.stdout | from_json)[0].Mounts | selectattr('Type', 'eq', 'volume')
+            | map(attribute='Name') | sort == frog_volumes | map(attribute='old') | sort
+          - frog_environment.FROG_HOST_KEY_SHA256 is match('^SHA256:')
+          - service_secrets.arcane_api_key is defined
+        quiet: true
+      no_log: true
+
+    - name: Refuse to overwrite existing target volumes or containers
+      ansible.builtin.shell: |
+        set -eu
+        test -z "$(docker ps -aq --filter label=com.docker.compose.project=frog-keepalive)"
+        for volume in frog_keepalive_ssh frog_keepalive_data; do
+          if docker volume inspect "$volume" >/dev/null 2>&1; then
+            echo "Target volume $volume already exists; inspect a previous cutover before retrying." >&2
+            exit 1
+          fi
+        done
+      changed_when: false
+
+    - name: Preserve each live setting in the service secrets
+      ansible.builtin.set_fact:
+        service_secrets: "{{ service_secrets | combine({item.value: frog_environment[item.key]}) }}"
+      loop: "{{ (gitops_stacks | selectattr('name', 'eq', 'frog-keepalive') | first).secrets | dict2items }}"
+      no_log: true
+
+    - name: Save the migrated settings encrypted
+      ansible.builtin.include_tasks: ../stages/5-services/tasks/save-secrets.yml
+
+    - name: Require both backup disks to be mounted
+      ansible.builtin.command:
+        argv: [mountpoint, '-q', /mnt/pve/backup]
+      delegate_to: "{{ item }}"
+      loop: [torus, kestrel]
+      changed_when: false
+
+    - name: Create private backup and transit directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: '0700'
+      delegate_to: "{{ item.host }}"
+      loop:
+        - { host: torus, path: "{{ frog_backup }}" }
+        - { host: kestrel, path: "{{ frog_backup }}" }
+        - { host: localhost, path: "{{ frog_transit }}" }
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python if item.host == 'localhost' else '/usr/bin/python3' }}"
+
+    - name: Stop the original only for the backup and cutover
+      block:
+        - name: Stop Frog on externum
+          ansible.builtin.command:
+            argv: [pct, exec, "{{ frog_guest.stdout }}", '--', docker, stop, frog-keepalive-frog-keepalive-1]
+          delegate_to: torus
+          changed_when: true
+
+        - name: Archive the two original volumes and keep them on torus
+          ansible.builtin.shell: |
+            set -euo pipefail
+            source=$(pct exec "$GUEST" -- docker volume inspect --format '{% raw %}{{ .Mountpoint }}{% endraw %}' "$VOLUME")
+            pct exec "$GUEST" -- tar -C "$source" -czf "/root/$VOLUME.tar.gz" .
+            pct pull "$GUEST" "/root/$VOLUME.tar.gz" "$BACKUP/$VOLUME.tar.gz"
+            chmod 600 "$BACKUP/$VOLUME.tar.gz"
+            pct exec "$GUEST" -- rm "/root/$VOLUME.tar.gz"
+          args:
+            executable: /bin/bash
+          environment:
+            GUEST: "{{ frog_guest.stdout }}"
+            VOLUME: "{{ item.old }}"
+            BACKUP: "{{ frog_backup }}"
+          loop: "{{ frog_volumes }}"
+          delegate_to: torus
+          changed_when: true
+
+        - name: Fetch the protected archives for transfer
+          ansible.builtin.fetch:
+            src: "{{ frog_backup }}/{{ item.old }}.tar.gz"
+            dest: "{{ frog_transit }}/{{ item.old }}.tar.gz"
+            flat: true
+          loop: "{{ frog_volumes }}"
+          delegate_to: torus
+          no_log: true
+
+        - name: Keep a second backup on kestrel
+          ansible.builtin.copy:
+            src: "{{ frog_transit }}/{{ item.old }}.tar.gz"
+            dest: "{{ frog_backup }}/{{ item.old }}.tar.gz"
+            mode: '0600'
+          loop: "{{ frog_volumes }}"
+          delegate_to: kestrel
+          no_log: true
+
+        - name: Transfer the protected archives to zoltan
+          ansible.builtin.copy:
+            src: "{{ frog_transit }}/{{ item.old }}.tar.gz"
+            dest: "/root/{{ item.old }}.tar.gz"
+            mode: '0600'
+          loop: "{{ frog_volumes }}"
+          no_log: true
+
+        - name: Restore into newly created external volumes
+          ansible.builtin.shell: |
+            set -eu
+            docker volume create "$VOLUME" >/dev/null
+            target=$(docker volume inspect --format '{% raw %}{{ .Mountpoint }}{% endraw %}' "$VOLUME")
+            tar -C "$target" -xzf "/root/$OLD_VOLUME.tar.gz"
+            python3 - "$target" "/root/$OLD_VOLUME.tar.gz" <<'PYVERIFY'
+            import pathlib, stat, sys, tarfile
+            root = pathlib.Path(sys.argv[1]).resolve()
+            with tarfile.open(sys.argv[2]) as archive:
+                for member in archive:
+                    path = (root / member.name).resolve()
+                    assert path.is_relative_to(root), 'Archive path escapes volume'
+                    meta = path.stat()
+                    assert stat.S_IMODE(meta.st_mode) == member.mode, 'Mode differs'
+                    assert (meta.st_uid, meta.st_gid) == (member.uid, member.gid), 'Owner differs'
+                    if member.isfile():
+                        assert path.read_bytes() == archive.extractfile(member).read(), 'Content differs'
+                    else:
+                        assert member.isdir() and path.is_dir(), 'Unexpected archive member'
+            PYVERIFY
+          environment:
+            VOLUME: "{{ item.new }}"
+            OLD_VOLUME: "{{ item.old }}"
+          loop: "{{ frog_volumes }}"
+          changed_when: true
+
+        - name: Sync only Frog and inject its preserved settings
+          ansible.builtin.include_tasks: ../stages/5-services/tasks/gitops-reconcile.yml
+
+        - name: Build the replacement image
+          ansible.builtin.command:
+            argv: [docker, compose, '-f', "{{ frog_compose }}", build]
+          changed_when: true
+
+        - name: Verify the existing key enforces the remote command
+          ansible.builtin.command:
+            argv: [docker, compose, '-f', "{{ frog_compose }}", run, '--rm', '--no-deps', frog-keepalive, once]
+          register: frog_login
+          changed_when: true
+          failed_when: frog_login.rc != 0 or 'forced command was confirmed' not in frog_login.stdout
+          no_log: true
+
+        - name: Start the replacement through Arcane
+          ansible.builtin.uri:
+            url: "{{ gitops_environment_api }}/projects/{{ gitops_mapping_now.json.data.projectId }}/up"
+            method: POST
+            body: {}
+            timeout: 120
+          changed_when: true
+          no_log: true
+
+        - name: Allow time to catch immediate startup failures
+          ansible.builtin.pause:
+            seconds: 10
+
+        - name: Confirm the replacement stays running
+          ansible.builtin.shell: |
+            set -eu
+            id=$(docker ps -aq --filter label=com.docker.compose.project=frog-keepalive --filter label=com.docker.compose.service=frog-keepalive)
+            test -n "$id"
+            test "$(docker inspect --format '{% raw %}{{ .State.Running }} {{ .RestartCount }}{% endraw %}' "$id")" = 'true 0'
+          changed_when: false
+          register: frog_running
+          until: frog_running.rc == 0
+          retries: 6
+          delay: 5
+
+        - name: Confirm the original remains stopped
+          ansible.builtin.command:
+            argv:
+              - pct
+              - exec
+              - "{{ frog_guest.stdout }}"
+              - '--'
+              - docker
+              - inspect
+              - '--format'
+              - '{% raw %}{{ .State.Running }}{% endraw %}'
+              - frog-keepalive-frog-keepalive-1
+          delegate_to: torus
+          register: frog_stopped
+          changed_when: false
+          failed_when: frog_stopped.stdout != 'false'
+
+      rescue:
+        - name: Stop any replacement before restarting the original
+          ansible.builtin.shell: |
+            set -eu
+            ids=$(docker ps -q --filter label=com.docker.compose.project=frog-keepalive)
+            if [ -n "$ids" ]; then docker stop $ids; fi
+          changed_when: true
+
+        - name: Restart the original Frog container on externum
+          ansible.builtin.command:
+            argv: [pct, exec, "{{ frog_guest.stdout }}", '--', docker, start, frog-keepalive-frog-keepalive-1]
+          delegate_to: torus
+          changed_when: true
+
+        - name: Report the failed cutover after rollback
+          ansible.builtin.fail:
+            msg: >-
+              Frog cutover failed. The replacement was stopped and the original restarted.
+              Preserve both backup directories and inspect target volumes before retrying.
+
+      always:
+        - name: Remove the local archives containing the SSH key
+          ansible.builtin.file:
+            path: "{{ frog_transit }}"
+            state: absent
+          delegate_to: localhost
+          vars:
+            ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+        - name: Remove transit archives on zoltan
+          ansible.builtin.file:
+            path: "/root/{{ item.old }}.tar.gz"
+            state: absent
+          loop: "{{ frog_volumes }}"
+
+    - name: Report the verified cutover and retained backups
+      ansible.builtin.debug:
+        msg: >-
+          Frog is running on zoltan; restricted login passed. The original container and volumes remain stopped on externum.
+          Backups are on both hosts at {{ frog_backup }}. Polling remains disabled.

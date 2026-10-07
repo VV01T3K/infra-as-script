@@ -1,0 +1,62 @@
+- name: Require a unique declared stack when filtering reconciliation
+  ansible.builtin.assert:
+    that: gitops_stacks | selectattr('name', 'eq', gitops_only_stack) | list | length == 1
+    fail_msg: gitops_only_stack must name exactly one declared stack.
+    quiet: true
+  when: gitops_only_stack is defined
+
+- name: Read the service secrets unlocked by the wrapper
+  ansible.builtin.set_fact:
+    service_secrets: "{{ lookup('ansible.builtin.env', 'SERVICE_SECRETS') | default('{}', true) | from_json }}"
+  no_log: true
+  when: service_secrets is not defined
+
+- name: Require the bootstrapped manager credentials
+  ansible.builtin.assert:
+    that: service_secrets.arcane_api_key is defined
+    fail_msg: Run the platform service bootstrap before GitOps.
+    quiet: true
+
+- name: Generate a token for the isolated canary if missing
+  ansible.builtin.set_fact:
+    service_secrets: >-
+      {{ service_secrets | combine({'gitops_canary_token':
+         lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits'])}) }}
+  when: service_secrets.gitops_canary_token is not defined
+  register: gitops_secret
+  no_log: true
+
+- name: Preserve the token through SOPS
+  ansible.builtin.include_tasks: save-secrets.yml
+  when: gitops_secret is not skipped
+
+- name: Read registered repositories and environments
+  ansible.builtin.uri:
+    url: "{{ arcane_api }}/{{ item }}"
+  loop: ['customize/git-repositories?limit=1000', environments]
+  register: gitops_current
+  no_log: true
+
+- name: Track repository configuration changes for agent propagation
+  ansible.builtin.set_fact:
+    gitops_repositories_changed: false
+
+- name: Reconcile declared repositories
+  ansible.builtin.include_tasks: gitops-repository.yml
+  loop: "{{ gitops_repositories }}"
+  loop_control:
+    loop_var: gitops_repository
+    label: "{{ gitops_repository.name }}"
+
+- name: Refresh repository IDs after creation
+  ansible.builtin.uri:
+    url: "{{ arcane_api }}/customize/git-repositories?limit=1000"
+  register: gitops_repos
+  no_log: true
+
+- name: Reconcile declared stack mappings
+  ansible.builtin.include_tasks: gitops-stack.yml
+  loop: "{{ gitops_stacks | selectattr('name', 'eq', gitops_only_stack) | list if gitops_only_stack is defined else gitops_stacks }}"
+  loop_control:
+    loop_var: gitops_stack
+    label: "{{ gitops_stack.environment }}/{{ gitops_stack.name }}"

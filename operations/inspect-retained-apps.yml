@@ -1,0 +1,78 @@
+# Read only: metadata, disk use and tunnel origins for the retained stacks.
+# Full Docker inspection stays in memory; environment values are never printed.
+- name: Inspect retained application migration dependencies
+  hosts: proxmox
+  gather_facts: false
+  tasks:
+    - name: Report selected guests and containers without secrets
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, '-c', "{{ inspector }}"]
+      vars:
+        inspector: |
+          import json, re, subprocess
+
+          def run(args):
+              result = subprocess.run(args, text=True, capture_output=True)
+              if result.returncode:
+                  raise RuntimeError('Read-only command failed: ' + ' '.join(args[:4]))
+              return result.stdout
+
+          report = []
+          for line in run(['pct', 'list']).splitlines()[1:]:
+              fields = line.split()
+              if not fields or fields[-1] not in {'komoda', 'internum', 'externum', 'zoltan'}:
+                  continue
+              guest, name = fields[0], fields[-1]
+              entry = {'guest': name, 'vmid': guest, 'status': fields[1]}
+              report.append(entry)
+              if fields[1] != 'running':
+                  continue
+              prefix = ['pct', 'exec', guest, '--']
+              entry['capacity'] = run(prefix + ['df', '-Pk', '/']).splitlines()[-1]
+              entry['memory'] = run(prefix + ['free', '-m']).splitlines()[1]
+              ids = run(prefix + ['docker', 'ps', '--all', '--quiet']).split()
+              containers = json.loads(run(prefix + ['docker', 'inspect', *ids])) if ids else []
+              entry['containers'] = []
+              for container in containers:
+                  cname = container['Name'].lstrip('/')
+                  if not any(word in cname.lower() for word in ['caddy', 'valkey', 'crowdsec', 'cloudbeaver', 'cloudflared', 'frog', 'researchcruise']):
+                      continue
+                  labels = container['Config'].get('Labels') or {}
+                  item = {
+                      'name': cname, 'image': container['Config']['Image'],
+                      'image_id': container['Image'], 'status': container['State']['Status'],
+                      'health': container['State'].get('Health', {}).get('Status'),
+                      'project': labels.get('com.docker.compose.project'),
+                      'compose_files': labels.get('com.docker.compose.project.config_files'),
+                      'networks': {key: value.get('IPAddress') for key, value in container['NetworkSettings']['Networks'].items()},
+                      'published_ports': container['NetworkSettings'].get('Ports'),
+                      'routes': {key: value for key, value in labels.items() if re.fullmatch(r'caddy(?:_\d+)?', key)},
+                      'env_names': sorted(value.split('=', 1)[0] for value in container['Config'].get('Env', [])),
+                      'mounts': [{key: mount.get(key) for key in ['Type', 'Name', 'Source', 'Destination', 'RW']} for mount in container['Mounts']],
+                  }
+                  if 'researchcruise' not in cname.lower():
+                      item['disk_use_kib'] = {}
+                      for mount in container['Mounts']:
+                          if mount['Type'] in {'volume', 'bind'} and mount['Source'] != '/var/run/docker.sock':
+                              value = run(prefix + ['du', '-sk', '--', mount['Source']]).split()[0]
+                              item['disk_use_kib'][mount['Source']] = int(value)
+                  if 'cloudflared' in cname:
+                      # Print only hostname/origin from the latest remotely managed
+                      # ingress update, never the complete log/config or tunnel token.
+                      log = subprocess.run(prefix + ['docker', 'logs', '--tail', '500', cname], text=True, capture_output=True)
+                      for logline in (log.stdout + log.stderr).splitlines():
+                          match = re.search(r'config=("(?:[^"\\]|\\.)*")', logline)
+                          if match:
+                              try:
+                                  config = json.loads(json.loads(match.group(1)))
+                                  item['tunnel_ingress'] = [{key: rule.get(key) for key in ['hostname', 'service']} for rule in config.get('ingress', [])]
+                              except (ValueError, TypeError):
+                                  pass
+                  entry['containers'].append(item)
+          print(json.dumps(report, indent=2))
+      register: retained_app_inspection
+      changed_when: false
+
+    - name: Show the redacted migration inventory
+      ansible.builtin.debug:
+        msg: "{{ retained_app_inspection.stdout | from_json }}"

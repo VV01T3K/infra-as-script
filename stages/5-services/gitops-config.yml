@@ -20,5 +20,24 @@ gitops_stacks:
     secrets:
       CANARY_TOKEN: gitops_canary_token
 
+  - name: frog-keepalive
+    environment: zoltan
+    repository: infra-as-script
+    branch: main
+    composePath: services/zoltan/frog-keepalive/compose.yaml
+    autoSync: false # enable only after the state-preserving migration is verified
+    syncInterval: 5
+    syncDirectory: true # Dockerfile and entrypoint are part of the deployment
+    secrets:
+      FROG_HOST: frog_host
+      FROG_PORT: frog_port
+      FROG_USER: frog_user
+      FROG_HOST_KEY_SHA256: frog_host_key_sha256
+      KEEPALIVE_INTERVAL_DAYS: frog_keepalive_interval_days
+      MAX_JITTER_SECONDS: frog_max_jitter_seconds
+      RETRY_SECONDS: frog_retry_seconds
+      CHECK_SECONDS: frog_check_seconds
+      CONNECT_TIMEOUT_SECONDS: frog_connect_timeout_seconds
+
 # Reconciliation alone never requests a sync. Enable after the source is pushed.
 gitops_sync_now: false

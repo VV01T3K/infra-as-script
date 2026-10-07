@@ -1,0 +1,33 @@
+# Existing key and last-success state are restored before this project starts.
+services:
+  frog-keepalive:
+    image: local/frog-keepalive:20261007
+    build: .
+    restart: unless-stopped
+    init: true
+    environment:
+      FROG_HOST: ${FROG_HOST:-frog01.mikr.us}
+      FROG_PORT: ${FROG_PORT:-11157}
+      FROG_USER: ${FROG_USER:-frog}
+      # A stopped first sync can be validated before the override is injected.
+      # The entrypoint refuses to run without a pinned SHA256 fingerprint.
+      FROG_HOST_KEY_SHA256: ${FROG_HOST_KEY_SHA256:-}
+      KEEPALIVE_INTERVAL_DAYS: ${KEEPALIVE_INTERVAL_DAYS:-60}
+      MAX_JITTER_SECONDS: ${MAX_JITTER_SECONDS:-21600}
+      RETRY_SECONDS: ${RETRY_SECONDS:-3600}
+      CHECK_SECONDS: ${CHECK_SECONDS:-3600}
+      CONNECT_TIMEOUT_SECONDS: ${CONNECT_TIMEOUT_SECONDS:-20}
+    volumes:
+      - frog_keepalive_ssh:/home/keepalive/.ssh
+      - frog_keepalive_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=1m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+volumes:
+  frog_keepalive_ssh:
+    external: true
+  frog_keepalive_data:
+    external: true
