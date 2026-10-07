@@ -10,10 +10,11 @@ After publishing this directory, run `mise run migrate-frog`. The cutover:
 
 - Requires the original to be running and refuses existing target volumes.
 - Copies the original environment settings into SOPS-backed Arcane overrides.
+- Syncs only Frog, resolves the actual project path and builds its image before
+  stopping the original.
 - Stops the original, archives both volumes and retains backups on both hosts.
 - Restores the volumes and verifies file contents, permissions and ownership.
-- Syncs only Frog, builds its image, verifies a restricted SSH login and starts
-  the replacement through Arcane.
+- Verifies a restricted SSH login and starts the replacement through Arcane.
 - Stops the replacement and restarts the original if the cutover fails.
 
 The immediate verification login advances the restored last-success timestamp.
