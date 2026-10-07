@@ -115,6 +115,31 @@ resource "unifi_firewall_zone_policy" "internal_to_infra" {
   }
 }
 
+# The guests in api_from (inventory, proxmox vars) may reach the Proxmox web API (TCP 8006) of the Proxmox machines.
+# They are in Infra and the machines in Internal (Default), and Infra may not start connections into Internal.
+# Stage 2's Proxmox firewall has the matching rule on the machines themselves.
+locals {
+  api_from_ips = [for name in try(local.inventory.children.proxmox.vars.api_from, []) : local.inventory.children.guests.hosts[name].address]
+}
+
+resource "unifi_firewall_zone_policy" "infra_to_proxmox_api" {
+  count                     = length(local.api_from_ips) > 0 ? 1 : 0
+  name                      = "Allow api_from to Proxmox API"
+  action                    = "ALLOW"
+  protocol                  = "tcp"
+  ip_version                = "IPV4"
+  auto_allow_return_traffic = true
+  source = {
+    zone_id = unifi_firewall_zone.infra.id
+    ips     = local.api_from_ips
+  }
+  destination = {
+    zone_id = data.unifi_firewall_zone.internal.id
+    ips     = [for m in local.inventory.children.proxmox.hosts : m.address]
+    port    = 8006
+  }
+}
+
 # --- Switch ports ---
 # Every setting is written out (today's values), so a plan shows only what really changes.
 # forward "all" + tagged "auto" = the native network untagged plus every VLAN tagged (trunk).
@@ -208,6 +233,8 @@ resource "unifi_user" "machine" {
   name       = each.key
   fixed_ip   = each.value.address
   network_id = unifi_network.lan[each.value.network].id
+  # The device type/icon UniFi shows for them, as set in the UniFi UI (2026-10-07); kept, not reset.
+  dev_id_override = 5254
 }
 
 moved {
