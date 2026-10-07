@@ -34,7 +34,9 @@ behavior before enabling polling for this stack.
 For a manual rollback, stop Frog on zoltan first, then start the retained
 `frog-keepalive-frog-keepalive-1` container on externum. Do not run both schedulers
 at once. An interrupted or failed cutover keeps target volumes for inspection;
-the cutover refuses to overwrite them on a retry.
+the cutover refuses to overwrite them on a retry. After inspection,
+`mise run migrate-frog -e frog_resume=true` verifies existing volumes against a
+fresh source backup and continues without extracting over them.
 
 Keep the separate two-month reminder until Mikrus confirms that these automated
 logins reset the inactivity timer.

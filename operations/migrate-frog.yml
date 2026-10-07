@@ -10,7 +10,6 @@
     arcane_api: http://127.0.0.1:3552/api
     gitops_only_stack: frog-keepalive
     gitops_sync_now: true
-    frog_compose: /opt/arcane/projects/frog-keepalive/compose.yaml
     frog_volumes:
       - { old: frog-keepalive_frog_keepalive_ssh, new: frog_keepalive_ssh }
       - { old: frog-keepalive_frog_keepalive_data, new: frog_keepalive_data }
@@ -59,16 +58,18 @@
         quiet: true
       no_log: true
 
-    - name: Refuse to overwrite existing target volumes or containers
+    - name: Refuse existing containers and require an explicit resume for restored volumes
       ansible.builtin.shell: |
         set -eu
-        test -z "$(docker ps -aq --filter label=com.docker.compose.project=frog-keepalive)"
+        test -z "$(docker ps -q --filter label=com.docker.compose.project=frog-keepalive)"
         for volume in frog_keepalive_ssh frog_keepalive_data; do
-          if docker volume inspect "$volume" >/dev/null 2>&1; then
+          if docker volume inspect "$volume" >/dev/null 2>&1 && [ "$RESUME" != yes ]; then
             echo "Target volume $volume already exists; inspect a previous cutover before retrying." >&2
             exit 1
           fi
         done
+      environment:
+        RESUME: "{{ 'yes' if frog_resume | default(false) | bool else 'no' }}"
       changed_when: false
 
     - name: Preserve each live setting in the service secrets
@@ -155,9 +156,15 @@
         - name: Restore into newly created external volumes
           ansible.builtin.shell: |
             set -eu
-            docker volume create "$VOLUME" >/dev/null
-            target=$(docker volume inspect --format '{% raw %}{{ .Mountpoint }}{% endraw %}' "$VOLUME")
-            tar -C "$target" -xzf "/root/$OLD_VOLUME.tar.gz"
+            if docker volume inspect "$VOLUME" >/dev/null 2>&1; then
+              test "$RESUME" = yes
+              target=$(docker volume inspect --format '{% raw %}{{ .Mountpoint }}{% endraw %}' "$VOLUME")
+              # A retry verifies the previous restoration; it never overwrites it.
+            else
+              docker volume create "$VOLUME" >/dev/null
+              target=$(docker volume inspect --format '{% raw %}{{ .Mountpoint }}{% endraw %}' "$VOLUME")
+              tar -C "$target" -xzf "/root/$OLD_VOLUME.tar.gz"
+            fi
             python3 - "$target" "/root/$OLD_VOLUME.tar.gz" <<'PYVERIFY'
             import pathlib, stat, sys, tarfile
             root = pathlib.Path(sys.argv[1]).resolve()
@@ -176,11 +183,46 @@
           environment:
             VOLUME: "{{ item.new }}"
             OLD_VOLUME: "{{ item.old }}"
+            RESUME: "{{ 'yes' if frog_resume | default(false) | bool else 'no' }}"
           loop: "{{ frog_volumes }}"
           changed_when: true
 
         - name: Sync only Frog and inject its preserved settings
           ansible.builtin.include_tasks: ../stages/5-services/tasks/gitops-reconcile.yml
+
+        - name: Read Arcane's actual project path and compose filename
+          ansible.builtin.uri:
+            url: "{{ gitops_environment_api }}/projects/{{ gitops_mapping_now.json.data.projectId }}"
+          register: frog_project_details
+          no_log: true
+
+        - name: Resolve the project file through the manager's mounted storage
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - -c
+              - |
+                import json, pathlib, subprocess, sys
+                project = pathlib.PurePosixPath(sys.argv[1]) / sys.argv[2]
+                mounts = json.loads(subprocess.check_output(
+                    ['docker', 'inspect', '--format', '{{ '{{' }}json .Mounts{{ '}}' }}', 'arcane'], text=True))
+                for mount in sorted(mounts, key=lambda m: len(m['Destination']), reverse=True):
+                    destination = pathlib.PurePosixPath(mount['Destination'])
+                    if project.is_relative_to(destination):
+                        host_file = pathlib.Path(mount['Source']) / project.relative_to(destination)
+                        assert host_file.is_file(), 'Synced compose file is missing from mounted storage'
+                        print(host_file)
+                        break
+                else:
+                    raise RuntimeError('Project is outside the manager mounted storage')
+              - "{{ frog_project_details.json.data.path }}"
+              - "{{ frog_project_details.json.data.composeFileName }}"
+          register: frog_project_file
+          changed_when: false
+
+        - name: Record the verified Compose path on the guest
+          ansible.builtin.set_fact:
+            frog_compose: "{{ frog_project_file.stdout }}"
 
         - name: Build the replacement image
           ansible.builtin.command:
