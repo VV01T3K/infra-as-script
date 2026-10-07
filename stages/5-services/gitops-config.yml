@@ -39,5 +39,27 @@ gitops_stacks:
       CHECK_SECONDS: frog_check_seconds
       CONNECT_TIMEOUT_SECONDS: frog_connect_timeout_seconds
 
+  - name: valkey
+    environment: zoltan
+    repository: infra-as-script
+    branch: main
+    composePath: services/zoltan/valkey/compose.yaml
+    autoSync: false
+    syncInterval: 5
+    syncDirectory: false
+    secrets:
+      VALKEY_PASSWORD: valkey_password
+
+  - name: crowdsec
+    environment: zoltan
+    repository: infra-as-script
+    branch: main
+    composePath: services/zoltan/crowdsec/compose.yaml
+    autoSync: false
+    syncInterval: 5
+    syncDirectory: false
+    secrets:
+      CROWDSEC_API_KEY: crowdsec_api_key
+
 # Reconciliation alone never requests a sync. Enable after the source is pushed.
 gitops_sync_now: false

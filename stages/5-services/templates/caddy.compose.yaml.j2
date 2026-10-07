@@ -2,7 +2,7 @@
 # It reads its routes from the Docker labels of containers on the network "caddy" (see Caddyfile).
 services:
   caddy:
-    image: local/caddy:{{ caddy_version }}-{{ caddy_docker_proxy_version }}-{{ caddy_dns_cloudflare_version }}
+    image: local/caddy:{{ caddy_version }}-{{ caddy_docker_proxy_version }}-{{ caddy_dns_cloudflare_version }}-{{ caddy_redis_version }}-{{ caddy_crowdsec_version }}
     build: .
     container_name: caddy
     environment:

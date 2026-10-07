@@ -1,0 +1,236 @@
+# Creates isolated replacements; old Valkey, CrowdSec and Caddys remain live.
+# Publish the application definitions first. This refuses existing target volumes.
+- name: Prepare certificate storage and CrowdSec on zoltan
+  hosts: zoltan
+  gather_facts: false
+  vars_files: [../stages/5-services/gitops-config.yml]
+  vars:
+    repo: "{{ playbook_dir | dirname }}"
+    arcane_api: http://127.0.0.1:3552/api
+    security_archives: [valkey_certificates.tar, crowdsec_config.tar, crowdsec_data.tar, crowdsec-snapshot.json]
+    security_volumes: [valkey_certificates, crowdsec_config, crowdsec_data]
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        X-Api-Key: "{{ service_secrets.arcane_api_key }}"
+      body_format: json
+  tasks:
+    - name: Find the two live original guests by name
+      ansible.builtin.shell: |
+        set -o pipefail
+        pct list | awk -v name="$NAME" '$NF == name && $2 == "running" {print $1}'
+      args:
+        executable: /bin/bash
+      environment:
+        NAME: "{{ item }}"
+      loop: [komoda, externum]
+      delegate_to: torus
+      register: security_guests
+      changed_when: false
+      failed_when: security_guests.stdout_lines | length != 1
+
+    - name: Read the original Caddy settings privately
+      ansible.builtin.command:
+        argv: [pct, exec, "{{ security_guests.results[1].stdout }}", '--', docker, inspect, caddy]
+      delegate_to: torus
+      register: security_original
+      changed_when: false
+      no_log: true
+
+    - name: Read unlocked secrets and select protected backup paths
+      ansible.builtin.set_fact:
+        service_secrets: "{{ lookup('ansible.builtin.env', 'SERVICE_SECRETS') | default('{}', true) | from_json }}"
+        security_environment: "{{ dict((security_original.stdout | from_json)[0].Config.Env | map('split', '=', 1)) }}"
+        security_backup: /mnt/pve/backup/proxy-security/{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}
+        security_transit: "{{ repo }}/build/proxy-security"
+      no_log: true
+
+    - name: Require the preserved settings before preparing replacements
+      ansible.builtin.assert:
+        that:
+          - security_environment.VALKEY_PASSWORD | length > 0
+          - security_environment.VALKEY_ENCRYPTION_KEY | length >= 32
+          - security_environment.CROWDSEC_API_KEY | length > 0
+          - service_secrets.arcane_api_key is defined
+        quiet: true
+      no_log: true
+
+    - name: Refuse existing target containers or volumes
+      ansible.builtin.shell: |
+        set -eu
+        test -z "$(docker ps -aq --filter name='^valkey$' --filter name='^crowdsec$')"
+        for volume in valkey_certificates crowdsec_config crowdsec_data; do
+          if docker volume inspect "$volume" >/dev/null 2>&1; then
+            echo "Target volume $volume exists; inspect the previous preparation before retrying." >&2
+            exit 1
+          fi
+        done
+      changed_when: false
+
+    - name: Preserve the original passwords and encryption key in SOPS
+      ansible.builtin.set_fact:
+        service_secrets: >-
+          {{ service_secrets | combine({'valkey_password': security_environment.VALKEY_PASSWORD,
+             'valkey_encryption_key': security_environment.VALKEY_ENCRYPTION_KEY,
+             'crowdsec_api_key': security_environment.CROWDSEC_API_KEY}) }}
+      no_log: true
+
+    - name: Save the preserved secrets encrypted
+      ansible.builtin.include_tasks: ../stages/5-services/tasks/save-secrets.yml
+      when: service_secrets != lookup('ansible.builtin.env', 'SERVICE_SECRETS') | default('{}', true) | from_json
+
+    - name: Make the backups and transit directories private
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: '0700'
+      delegate_to: "{{ item.host }}"
+      loop:
+        - { host: torus, path: "{{ security_backup }}" }
+        - { host: kestrel, path: "{{ security_backup }}" }
+        - { host: localhost, path: "{{ security_transit }}" }
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python if item.host == 'localhost' else '/usr/bin/python3' }}"
+
+    - name: Snapshot Valkey online without changing the old service
+      ansible.builtin.shell: |
+        set -euo pipefail
+        pct exec "$GUEST" -- docker exec valkey sh -ec 'umask 077; export REDISCLI_AUTH="$VALKEY_PASSWORD"; valkey-cli --rdb /data/migration-dump.rdb'
+        pct exec "$GUEST" -- sh -ec '
+          set -eu; umask 077
+          dir=$(docker volume inspect --format "{% raw %}{{ .Mountpoint }}{% endraw %}" valkey_valkey-data)
+          tar -C "$dir" -cf /root/valkey_certificates.tar migration-dump.rdb
+        '
+        pct pull "$GUEST" /root/valkey_certificates.tar "$BACKUP/valkey_certificates.tar"
+        chmod 600 "$BACKUP/valkey_certificates.tar"
+        pct exec "$GUEST" -- rm /root/valkey_certificates.tar /var/lib/docker/volumes/valkey_valkey-data/_data/migration-dump.rdb
+      args:
+        executable: /bin/bash
+      environment:
+        GUEST: "{{ security_guests.results[0].stdout }}"
+        BACKUP: "{{ security_backup }}"
+      delegate_to: torus
+      changed_when: true
+      no_log: true
+
+    - name: Back up CrowdSec configuration and consistent SQLite state online
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, '-c', "{{ lookup('ansible.builtin.file', repo + '/scripts/snapshot-crowdsec.py') }}"]
+      environment:
+        GUEST: "{{ security_guests.results[1].stdout }}"
+        BACKUP: "{{ security_backup }}"
+      delegate_to: torus
+      changed_when: true
+
+    - name: Transfer protected backups through the controller
+      block:
+        - name: Fetch the protected archives
+          ansible.builtin.fetch:
+            src: "{{ security_backup }}/{{ item }}"
+            dest: "{{ security_transit }}/{{ item }}"
+            flat: true
+          loop: "{{ security_archives }}"
+          delegate_to: torus
+          no_log: true
+
+        - name: Keep the second backup on kestrel
+          ansible.builtin.copy:
+            src: "{{ security_transit }}/{{ item }}"
+            dest: "{{ security_backup }}/{{ item }}"
+            mode: '0600'
+          loop: "{{ security_archives }}"
+          delegate_to: kestrel
+          no_log: true
+
+        - name: Transfer the snapshot to the target guest
+          ansible.builtin.copy:
+            src: "{{ security_transit }}/{{ item }}"
+            dest: "/root/{{ item }}"
+            mode: '0600'
+          loop: "{{ security_archives }}"
+          no_log: true
+
+        - name: Restore new external volumes without overwriting an existing volume
+          ansible.builtin.shell: |
+            set -eu
+            docker volume create "$VOLUME" >/dev/null
+            target=$(docker volume inspect --format '{% raw %}{{ .Mountpoint }}{% endraw %}' "$VOLUME")
+            tar -C "$target" -xf "/root/$VOLUME.tar"
+            if [ "$VOLUME" = valkey_certificates ]; then
+              mv "$target/migration-dump.rdb" "$target/dump.rdb"
+              chown 999:999 "$target/dump.rdb"
+            fi
+          environment:
+            VOLUME: "{{ item }}"
+          loop: "{{ security_volumes }}"
+          changed_when: true
+
+        - name: Verify CrowdSec restoration and the database integrity before startup
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - -c
+              - |
+                import json, pathlib, sqlite3, subprocess, tarfile, stat
+                mounts = json.loads(subprocess.check_output(['docker', 'volume', 'inspect', 'valkey_certificates'], text=True))
+                with tarfile.open('/root/valkey_certificates.tar') as archive:
+                    restored = pathlib.Path(mounts[0]['Mountpoint']) / 'dump.rdb'
+                    assert restored.read_bytes() == archive.extractfile('migration-dump.rdb').read(), 'Valkey snapshot differs'
+                for volume in ('crowdsec_config', 'crowdsec_data'):
+                    mounts = json.loads(subprocess.check_output(['docker', 'volume', 'inspect', volume], text=True))
+                    root = pathlib.Path(mounts[0]['Mountpoint'])
+                    with tarfile.open('/root/' + volume + '.tar') as archive:
+                        for member in archive:
+                            path = root / member.name
+                            meta = path.lstat()
+                            assert stat.S_IMODE(meta.st_mode) == member.mode, 'Mode differs'
+                            assert (meta.st_uid, meta.st_gid) == (member.uid, member.gid), 'Owner differs'
+                            if member.isfile():
+                                assert path.read_bytes() == archive.extractfile(member).read(), 'Content differs'
+                            elif member.issym():
+                                assert path.readlink().as_posix() == member.linkname, 'Symlink differs'
+                            else:
+                                assert member.isdir() and path.is_dir(), 'Unexpected member'
+                    if volume == 'crowdsec_data':
+                        expected = json.loads(pathlib.Path('/root/crowdsec-snapshot.json').read_text())
+                        with sqlite3.connect((root / 'crowdsec.db').as_uri() + '?mode=ro', uri=True) as db:
+                            assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+                            for table, count in expected['table_counts'].items():
+                                assert db.execute('SELECT COUNT(*) FROM "' + table.replace('"', '""') + '"').fetchone()[0] == count
+                print('Restored configuration, ownership, contents and SQLite table counts match')
+          changed_when: false
+
+        - name: Explicitly sync only the two prepared stacks
+          ansible.builtin.set_fact:
+            gitops_sync_now: true
+            gitops_stacks: "{{ gitops_stacks | selectattr('name', 'in', ['valkey', 'crowdsec']) | list }}"
+
+        - name: Create mappings and inject the preserved settings
+          ansible.builtin.include_tasks: ../stages/5-services/tasks/gitops-reconcile.yml
+
+        - name: Start only the two restored projects through Arcane
+          ansible.builtin.include_tasks: tasks/start-security-project.yml
+          loop: [valkey, crowdsec]
+          loop_control:
+            loop_var: security_project_name
+
+        - name: Record the protected backup location
+          ansible.builtin.copy:
+            content: "{{ security_backup }}\n"
+            dest: /root/proxy-security-backup
+            mode: '0600'
+
+      always:
+        - name: Remove the controller transit directory
+          ansible.builtin.file:
+            path: "{{ security_transit }}"
+            state: absent
+          delegate_to: localhost
+          vars:
+            ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+        - name: Remove the target transit archives
+          ansible.builtin.file:
+            path: /root/{{ item }}
+            state: absent
+          loop: "{{ security_archives }}"

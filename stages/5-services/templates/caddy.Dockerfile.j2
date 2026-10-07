@@ -2,7 +2,9 @@
 FROM docker.io/library/caddy:{{ caddy_version }}-builder-alpine AS builder
 RUN xcaddy build \
     --with github.com/lucaslorentz/caddy-docker-proxy/v2@{{ caddy_docker_proxy_version }} \
-    --with github.com/caddy-dns/cloudflare@{{ caddy_dns_cloudflare_version }}
+    --with github.com/caddy-dns/cloudflare@{{ caddy_dns_cloudflare_version }} \
+    --with github.com/pberkel/caddy-storage-redis@{{ caddy_redis_version }} \
+    --with github.com/hslatman/caddy-crowdsec-bouncer/http@{{ caddy_crowdsec_version }}
 
 FROM docker.io/library/caddy:{{ caddy_version }}-alpine
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy

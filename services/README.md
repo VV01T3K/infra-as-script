@@ -78,3 +78,18 @@ The manager's project directory is owned by its application UID/GID 65532, with
 mode 0700. Bootstrap and GitOps reconcile this ownership; bootstrap Compose
 files remain root-only. The manager's root supervisor is not its filesystem
 runtime identity.
+
+## Proxy security preparation
+
+`mise run prepare-proxy-security` creates isolated Valkey and CrowdSec projects on
+zoltan. Publish their definitions first. It keeps the originals running, copies a
+native Valkey replication snapshot and an online SQLite backup, preserves credentials
+in SOPS, and verifies restored contents before starting the GitOps replacements.
+Archives remain mode 0600 under a dated `proxy-security` directory on both backup disks.
+Target volumes must be absent. A retry refuses existing data instead of overwriting it.
+
+Both services have no published ports. Valkey is on the internal `caddy_security`
+network; CrowdSec also has an outbound network for its community API and collections.
+Certificate storage uses `noeviction`. Polling stays disabled during migration.
+Caddy integration is a separate step after replacement health is verified.
+CloudBeaver remains stopped on externum until Research Cruise migrates.

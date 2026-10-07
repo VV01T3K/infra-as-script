@@ -1,0 +1,44 @@
+- name: Resolve the prepared mapping by name
+  ansible.builtin.uri:
+    url: "{{ arcane_api }}/environments/0/gitops-syncs?limit=1000"
+  register: security_mappings
+  no_log: true
+
+- name: Require exactly one initialized mapping
+  ansible.builtin.assert:
+    that:
+      - security_matches | length == 1
+      - security_matches[0].projectId | default('', true) | length > 0
+    quiet: true
+  vars:
+    security_matches: "{{ security_mappings.json.data | selectattr('name', 'eq', security_project_name) | list }}"
+  no_log: true
+
+- name: Start the restored project
+  ansible.builtin.uri:
+    url: "{{ arcane_api }}/environments/0/projects/{{ security_project_id }}/up"
+    method: POST
+    body: {}
+    timeout: 180
+  vars:
+    security_project_id: "{{ (security_mappings.json.data | selectattr('name', 'eq', security_project_name) | first).projectId }}"
+  changed_when: true
+  no_log: true
+
+- name: Require a healthy replacement with no published ports
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import json, subprocess, sys
+        container = json.loads(subprocess.check_output(['docker', 'inspect', sys.argv[1]], text=True))[0]
+        assert container['State']['Running'] and container['RestartCount'] == 0
+        assert container['State']['Health']['Status'] == 'healthy'
+        assert not any(container['NetworkSettings']['Ports'].values()), 'Published port'
+      - "{{ security_project_name }}"
+  register: security_health
+  until: security_health.rc == 0
+  retries: 24
+  delay: 5
+  changed_when: false

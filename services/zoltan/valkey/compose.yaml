@@ -1,0 +1,34 @@
+# Copy the existing certificate database before starting this project.
+services:
+  valkey:
+    image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+    container_name: valkey
+    restart: unless-stopped
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:-}
+    command:
+      - sh
+      - -ec
+      - >-
+        test -n "$$VALKEY_PASSWORD";
+        exec valkey-server --requirepass "$$VALKEY_PASSWORD"
+        --maxmemory 256mb --maxmemory-policy noeviction
+        --save 900 1 --save 300 10 --save 60 10000 --appendonly yes
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$VALKEY_PASSWORD" valkey-cli ping | grep -qx PONG']
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    volumes:
+      - valkey_certificates:/data
+    networks: [security]
+    security_opt: [no-new-privileges:true]
+
+networks:
+  security:
+    name: caddy_security
+    internal: true
+
+volumes:
+  valkey_certificates:
+    external: true
