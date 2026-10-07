@@ -1,0 +1,33 @@
+- name: Read Arcane's actual project path and compose filename
+  ansible.builtin.uri:
+    url: "{{ gitops_environment_api }}/projects/{{ gitops_mapping_now.json.data.projectId }}"
+  register: cruise_project_details
+  no_log: true
+
+- name: Resolve the project file through the manager's mounted storage
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import json, pathlib, subprocess, sys
+        project = pathlib.PurePosixPath(sys.argv[1]) / sys.argv[2]
+        mounts = json.loads(subprocess.check_output(
+            ['docker', 'inspect', '--format', '{{ '{{' }}json .Mounts{{ '}}' }}', 'arcane'], text=True))
+        for mount in sorted(mounts, key=lambda m: len(m['Destination']), reverse=True):
+            destination = pathlib.PurePosixPath(mount['Destination'])
+            if project.is_relative_to(destination):
+                host_file = pathlib.Path(mount['Source']) / project.relative_to(destination)
+                assert host_file.is_file(), 'Synced compose file is missing from mounted storage'
+                print(host_file)
+                break
+        else:
+            raise RuntimeError('Project is outside the manager mounted storage')
+      - "{{ cruise_project_details.json.data.path }}"
+      - "{{ cruise_project_details.json.data.composeFileName }}"
+  register: cruise_project_file
+  changed_when: false
+
+- name: Record the verified Compose path on the guest
+  ansible.builtin.set_fact:
+    cruise_compose: "{{ cruise_project_file.stdout }}"

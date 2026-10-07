@@ -54,9 +54,12 @@
     - name: Find externum's guest ID
       ansible.builtin.shell: |
         set -o pipefail
-        pct list | awk '$NF == "externum" {print $1}'
+        pct list | awk -v name="$SOURCE_NAME" '$NF == name {print $1}'
       args:
         executable: /bin/bash
+      environment:
+        SOURCE_NAME: "{{ cruise_backup_source_guest | default('externum') }}"
+      delegate_to: "{{ cruise_backup_source_node | default('torus') }}"
       register: externum
       changed_when: false
       failed_when: externum.stdout | length == 0
@@ -76,6 +79,7 @@
         executable: /bin/bash
       environment:
         GUEST: "{{ externum.stdout }}"
+      delegate_to: "{{ cruise_backup_source_node | default('torus') }}"
       register: live_counts
       changed_when: true
 
@@ -91,6 +95,7 @@
         executable: /bin/bash
       environment:
         GUEST: "{{ externum.stdout }}"
+      delegate_to: "{{ cruise_backup_source_node | default('torus') }}"
       register: torus_copy
       changed_when: true
 
@@ -99,9 +104,10 @@
         src: /mnt/pve/backup/research-cruise/{{ bak }}
         dest: "{{ hostvars.torus.transit }}/{{ bak }}"
         flat: true
+      delegate_to: "{{ cruise_backup_source_node | default('torus') }}"
 
 - name: Keep a second copy on kestrel
-  hosts: kestrel
+  hosts: "{{ 'torus' if cruise_backup_source_node | default('torus') == 'kestrel' else 'kestrel' }}"
   gather_facts: false
   vars:
     bak: "{{ hostvars.torus.bak }}"

@@ -1,0 +1,344 @@
+# Run only after the private candidate is verified. Quiesce writers, make and
+# test a new two-disk backup, restore the target, then switch the old tunnel origin.
+# Automatic rollback applies before traffic opens. Afterwards preserve the new
+# database; rolling back requires a fresh backup of any writes on the new server.
+- name: Cut over Research Cruise with a consistent backup
+  hosts: zoltan
+  gather_facts: false
+  vars_files: [../stages/5-services/gitops-config.yml]
+  vars:
+    repo: "{{ playbook_dir | dirname }}"
+    arcane_api: http://127.0.0.1:3552/api
+    cruise_candidate: /root/research-cruise-candidate
+    cruise_transit: "{{ repo }}/build/research-cruise-cutover"
+    cruise_target: /root/research-cruise-cutover
+    cruise_source_guest: '301'
+    cruise_sql_source: >-
+      pct exec {{ cruise_source_guest }} -- docker exec researchcruiseapp-db sh -c
+      'exec /opt/mssql-tools18/bin/sqlcmd -S 127.0.0.1 -U sa -P "$SA_PASSWORD" -C -b -h -1 -W -s "|" -Q "$0"'
+    cruise_sql_target: >-
+      docker exec researchcruiseapp-db sh -c
+      'exec /opt/mssql-tools18/bin/sqlcmd -S 127.0.0.1 -U sa -P "$MSSQL_SA_PASSWORD" -C -b -h -1 -W -s "|" -Q "$0"'
+    cruise_counts: >-
+      SET NOCOUNT ON; SELECT s.name + '.' + t.name, SUM(p.rows) FROM [ResearchCruiseApp].sys.tables t
+      JOIN [ResearchCruiseApp].sys.schemas s ON s.schema_id = t.schema_id
+      JOIN [ResearchCruiseApp].sys.partitions p ON p.object_id = t.object_id AND p.index_id IN (0, 1)
+      GROUP BY s.name, t.name ORDER BY 1;
+  tasks:
+    - name: Refuse a previous cutover or missing verified candidate
+      ansible.builtin.shell: |
+        set -eu
+        test -f {{ cruise_candidate }}/project-path
+        test ! -e {{ cruise_target }}/traffic-opened
+        test -z "$(docker ps -aq --filter name='^researchcruiseapp-db$')"
+        ! docker volume inspect researchcruiseapp-db >/dev/null 2>&1
+        test "$(docker inspect --format '{% raw %}{{.State.Health.Status}}{% endraw %}' cruise-candidate-backend)" = healthy
+      changed_when: false
+    - name: Read the prepared project path
+      ansible.builtin.slurp:
+        src: "{{ cruise_candidate }}/project-path"
+      register: project_path
+    - name: Name the backup and initial cutover state
+      ansible.builtin.set_fact:
+        cruise_compose: "{{ project_path.content | b64decode | trim }}"
+        cruise_bak: ResearchCruiseApp-{{ now(utc=true, fmt='%Y%m%d-%H%M') }}Z.bak
+        cruise_traffic_opened: false
+    - name: Require both mounted backup disks
+      ansible.builtin.command:
+        argv: [mountpoint, '-q', /mnt/pve/backup]
+      delegate_to: "{{ item }}"
+      loop: [torus, kestrel]
+      changed_when: false
+    - name: Create private target and transit directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: '0700'
+      delegate_to: "{{ item.host }}"
+      loop:
+        - { host: zoltan, path: "{{ cruise_target }}" }
+        - { host: localhost, path: "{{ cruise_transit }}" }
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python if item.host == 'localhost' else '/usr/bin/python3' }}"
+    - name: Stop the disposable candidate to free SQL Server memory
+      ansible.builtin.command:
+        argv: [docker, stop, cruise-candidate-frontend, cruise-candidate-backend, cruise-candidate-db]
+      changed_when: true
+    - name: Preserve the prepared environment privately for target startup
+      ansible.builtin.copy:
+        src: "{{ cruise_candidate }}/environment"
+        dest: "{{ cruise_target }}/environment"
+        remote_src: true
+        mode: '0600'
+      no_log: true
+    - name: Cut over while preserving recovery before public traffic
+      block:
+        - name: Stop the original frontend and backend writers
+          ansible.builtin.command:
+            argv: [pct, exec, "{{ cruise_source_guest }}", '--', docker, stop, researchcruiseapp-frontend, researchcruiseapp-backend]
+          delegate_to: torus
+          changed_when: true
+        - name: Make the source database read only to prevent competing writes
+          ansible.builtin.shell: >-
+            {{ cruise_sql_source }} 'ALTER DATABASE [ResearchCruiseApp] SET READ_ONLY WITH ROLLBACK IMMEDIATE;'
+          delegate_to: torus
+          changed_when: true
+        - name: Capture final row counts from the frozen source
+          ansible.builtin.command: "{{ cruise_sql_source }} '{{ cruise_counts }}'"
+          delegate_to: torus
+          register: cruise_source_counts
+          changed_when: false
+        - name: Require an empty email outbox before rollback-capable startup
+          ansible.builtin.shell: >-
+            {{ cruise_sql_source }} "SET NOCOUNT ON;
+            IF OBJECT_ID('ResearchCruiseApp.dbo.EmailOutboxMessages') IS NOT NULL
+            SELECT COUNT(*) FROM ResearchCruiseApp.dbo.EmailOutboxMessages;
+            ELSE SELECT 0;"
+          delegate_to: torus
+          register: cruise_outbox
+          changed_when: false
+          failed_when: cruise_outbox.stdout | trim != '0'
+        - name: Make a fresh two-disk native backup and test its restore
+          ansible.builtin.command:
+            argv: [ansible-playbook, operations/research-cruise-backup.yml, '-e', "bak={{ cruise_bak }}"]
+            chdir: "{{ repo }}"
+          delegate_to: localhost
+          vars:
+            ansible_python_interpreter: "{{ ansible_playbook_python }}"
+          changed_when: true
+          register: cruise_backup_result
+        - name: Fetch the verified final backup
+          ansible.builtin.fetch:
+            src: /mnt/pve/backup/research-cruise/{{ cruise_bak }}
+            dest: "{{ cruise_transit }}/{{ cruise_bak }}"
+            flat: true
+          delegate_to: torus
+        - name: Copy the final backup into a root-only recovery directory
+          ansible.builtin.copy:
+            src: "{{ cruise_transit }}/{{ cruise_bak }}"
+            dest: "{{ cruise_target }}/database.bak"
+            owner: '10001'
+            mode: '0600'
+        - name: Create the empty database volume
+          ansible.builtin.command:
+            argv: [docker, volume, create, researchcruiseapp-db]
+          changed_when: true
+        - name: Start only the new database
+          ansible.builtin.command:
+            argv:
+              - docker
+              - compose
+              - '-p'
+              - research-cruise
+              - '--env-file'
+              - "{{ cruise_target }}/environment"
+              - '-f'
+              - "{{ cruise_compose }}"
+              - up
+              - '-d'
+              - '--wait'
+              - '--wait-timeout'
+              - '180'
+              - db
+          changed_when: true
+        - name: Put the backup inside the target SQL container
+          ansible.builtin.command:
+            argv: [docker, cp, "{{ cruise_target }}/database.bak", 'researchcruiseapp-db:/var/opt/mssql/database.bak']
+          changed_when: true
+        - name: Make the container recovery file readable only by SQL Server
+          ansible.builtin.command:
+            argv: [docker, exec, '-u', '0', researchcruiseapp-db, chown, '10001:0', /var/opt/mssql/database.bak]
+          changed_when: true
+        - name: Restore the final database and prove its integrity
+          ansible.builtin.shell: >-
+            {{ cruise_sql_target }} "RESTORE DATABASE [ResearchCruiseApp] FROM DISK = N'/var/opt/mssql/database.bak'
+            WITH CHECKSUM, RECOVERY;
+            DBCC CHECKDB ([ResearchCruiseApp]) WITH NO_INFOMSGS, ALL_ERRORMSGS;
+            ALTER DATABASE [ResearchCruiseApp] SET READ_WRITE;"
+          changed_when: true
+        - name: Verify all table row counts before starting application writers
+          ansible.builtin.command: "{{ cruise_sql_target }} '{{ cruise_counts }}'"
+          register: cruise_target_counts
+          changed_when: false
+          failed_when: cruise_target_counts.stdout != cruise_source_counts.stdout
+        - name: Stop the old SQL Server and retain its original volume
+          ansible.builtin.command:
+            argv: [pct, exec, "{{ cruise_source_guest }}", '--', docker, stop, researchcruiseapp-db]
+          delegate_to: torus
+          changed_when: true
+        - name: Start the verified replacement frontend and backend
+          ansible.builtin.command:
+            argv:
+              - docker
+              - compose
+              - '-p'
+              - research-cruise
+              - '--env-file'
+              - "{{ cruise_target }}/environment"
+              - '-f'
+              - "{{ cruise_compose }}"
+              - up
+              - '-d'
+              - '--wait'
+              - '--wait-timeout'
+              - '180'
+          changed_when: true
+        - name: Verify the replacement origin with trusted TLS and API routing
+          ansible.builtin.command:
+            argv:
+              - curl
+              - '--fail'
+              - '--silent'
+              - '--show-error'
+              - '--resolve'
+              - "cruise.wsiwiec.com:443:{{ address }}"
+              - https://cruise.wsiwiec.com/api/version
+          delegate_to: localhost
+          vars:
+            ansible_python_interpreter: "{{ ansible_playbook_python }}"
+          register: cruise_origin_version
+          changed_when: false
+          failed_when: cruise_origin_version.rc != 0 or cruise_origin_version.stdout | from_json != '2.5.1'
+        - name: Create a temporary old-tunnel relay directory
+          ansible.builtin.command:
+            argv: [pct, exec, "{{ cruise_source_guest }}", '--', install, '-d', '-m', '700', /root/research-cruise-relay]
+          delegate_to: torus
+          changed_when: true
+        - name: Write the temporary relay with TLS verification and preserved hostname
+          ansible.builtin.copy:
+            dest: /root/research-cruise-relay.conf
+            mode: '0600'
+            content: |
+              server {
+                listen 8080;
+                location / {
+                  proxy_pass https://{{ address }};
+                  proxy_set_header Host cruise.wsiwiec.com;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto https;
+                  proxy_ssl_server_name on;
+                  proxy_ssl_name cruise.wsiwiec.com;
+                  proxy_ssl_verify on;
+                  proxy_ssl_trusted_certificate /etc/ssl/cert.pem;
+                }
+              }
+          delegate_to: torus
+        - name: Copy the relay configuration into the old guest
+          ansible.builtin.command:
+            argv: [pct, push, "{{ cruise_source_guest }}", /root/research-cruise-relay.conf, /root/research-cruise-relay/default.conf]
+          delegate_to: torus
+          changed_when: true
+        - name: Make the nonsecret relay configuration readable by nginx
+          ansible.builtin.command:
+            argv: [pct, exec, "{{ cruise_source_guest }}", '--', chmod, '644', /root/research-cruise-relay/default.conf]
+          delegate_to: torus
+          changed_when: true
+        - name: Validate the temporary relay before opening traffic
+          ansible.builtin.command:
+            argv:
+              - pct
+              - exec
+              - "{{ cruise_source_guest }}"
+              - '--'
+              - docker
+              - run
+              - '--rm'
+              - '--network'
+              - none
+              - '-v'
+              - /root/research-cruise-relay/default.conf:/etc/nginx/conf.d/default.conf:ro
+              - '--entrypoint'
+              - nginx
+              - ghcr.io/vv01t3k/researchcruiseapp/frontend@sha256:bd4e25efdb855db13b31c43f9a6e935ebee18aee503158ebb341f6b77c8f23d8
+              - '-t'
+          delegate_to: torus
+          changed_when: false
+        - name: Record that subsequent failure must preserve target writes
+          ansible.builtin.set_fact:
+            cruise_traffic_opened: true
+        - name: Open the existing tunnel route to the verified new origin
+          ansible.builtin.command:
+            argv:
+              - pct
+              - exec
+              - "{{ cruise_source_guest }}"
+              - '--'
+              - docker
+              - run
+              - '-d'
+              - '--name'
+              - research-cruise-relay
+              - '--restart'
+              - unless-stopped
+              - '--network'
+              - proxy
+              - '--label'
+              - caddy=https://cruise.wsiwiec.com
+              - '--label'
+              - caddy.route.import=crowdsec
+              - '--label'
+              - "caddy.route.reverse_proxy={{ '{{' }}upstreams 8080{{ '}}' }}"
+              - '-v'
+              - /root/research-cruise-relay/default.conf:/etc/nginx/conf.d/default.conf:ro
+              - '--entrypoint'
+              - nginx
+              - ghcr.io/vv01t3k/researchcruiseapp/frontend@sha256:bd4e25efdb855db13b31c43f9a6e935ebee18aee503158ebb341f6b77c8f23d8
+              - '-g'
+              - 'daemon off;'
+          delegate_to: torus
+          changed_when: true
+        - name: Record the new database as authoritative
+          ansible.builtin.copy:
+            dest: "{{ cruise_target }}/traffic-opened"
+            content: "{{ cruise_bak }}\n"
+            mode: '0600'
+        - name: Verify the public route after Caddy observes the relay
+          ansible.builtin.command:
+            argv: [curl, '--fail', '--silent', '--show-error', https://cruise.wsiwiec.com/api/version]
+          delegate_to: localhost
+          vars:
+            ansible_python_interpreter: "{{ ansible_playbook_python }}"
+          register: cruise_public_version
+          changed_when: false
+          failed_when: cruise_public_version.rc != 0 or cruise_public_version.stdout | from_json != '2.5.1'
+          retries: 12
+          delay: 5
+          until: cruise_public_version.rc == 0
+      rescue:
+        - name: Stop the replacement before reopening the original writers
+          ansible.builtin.shell: |
+            for name in researchcruiseapp-frontend researchcruiseapp-backend researchcruiseapp-db; do
+              docker stop "$name" >/dev/null 2>&1 || true
+            done
+          when: not cruise_traffic_opened
+          changed_when: true
+        - name: Restore the original database and application access before traffic opened
+          ansible.builtin.shell: |
+            set -eu
+            pct exec {{ cruise_source_guest }} -- docker start researchcruiseapp-db
+            for i in $(seq 60); do
+              if {{ cruise_sql_source }} 'ALTER DATABASE [ResearchCruiseApp] SET READ_WRITE;' >/dev/null 2>&1; then
+                pct exec {{ cruise_source_guest }} -- docker start researchcruiseapp-backend researchcruiseapp-frontend
+                exit 0
+              fi
+              sleep 5
+            done
+            exit 1
+          delegate_to: torus
+          when: not cruise_traffic_opened
+          changed_when: true
+        - name: Report the recovery boundary
+          ansible.builtin.fail:
+            msg: >-
+              {{ 'Cutover stopped before public traffic; the original writers were restarted. Inspect retained target artifacts before retrying.'
+                 if not cruise_traffic_opened else
+                 'Traffic may have reached the replacement. Its database remains authoritative; do not restart stale source writers.
+                 Repair the relay or back up new writes before rollback.' }}
+      always:
+        - name: Remove local database transit
+          ansible.builtin.file:
+            path: "{{ cruise_transit }}"
+            state: absent
+          delegate_to: localhost
+          vars:
+            ansible_python_interpreter: "{{ ansible_playbook_python }}"

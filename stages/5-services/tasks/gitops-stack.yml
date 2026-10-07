@@ -121,6 +121,7 @@
   ansible.builtin.uri:
     url: "{{ gitops_environment_api }}/gitops-syncs/{{ gitops_mapping.id }}/sync"
     method: POST
+    timeout: 180
   when: gitops_sync_now | bool
   register: gitops_sync_result
   changed_when: false
@@ -178,6 +179,7 @@
       ansible.builtin.uri:
         url: "{{ gitops_environment_api }}/gitops-syncs/{{ gitops_mapping.id }}/sync"
         method: POST
+        timeout: 180
       when: gitops_sync_now | bool
       register: gitops_second_sync
       changed_when: false

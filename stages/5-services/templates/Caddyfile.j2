@@ -48,7 +48,8 @@
 
 # The wildcard certificate, through Cloudflare DNS (works for names that exist only inside the network).
 # A name with no route of its own gets its connection closed.
-*.{{ domain }} {
+{% for wildcard_domain in caddy_wildcard_domains | default([domain]) %}
+*.{{ wildcard_domain }} {
 {% if caddy_security_enabled | default(false) | bool %}
 	import protected
 {% endif %}
@@ -58,6 +59,7 @@
 	}
 	abort
 }
+{% endfor %}
 
 # Routes to web UIs on other guests (pdm, omv), written at the end of stage 5. No file yet = only a warning.
 import /etc/caddy/backends/*.caddy

@@ -91,6 +91,16 @@ usage = 'arg "[ansible_args]..." help="Extra options, e.g. -e security_prepare_o
 run = 'eval "scripts/with-fleet-key.sh scripts/with-service-secrets.sh ansible-playbook operations/integrate-proxy-security.yml ${usage_ansible_args:-}"'
 raw = true
 
+[tasks.prepare-research-cruise]
+description = "Restore and verify a private Research Cruise candidate without external integrations"
+run = "scripts/with-fleet-key.sh scripts/with-service-secrets.sh ansible-playbook operations/prepare-research-cruise.yml"
+raw = true
+
+[tasks.migrate-research-cruise]
+description = "Freeze source writes, test a fresh two-disk SQL backup, and cut over Research Cruise with recovery guards"
+run = "scripts/with-fleet-key.sh scripts/with-service-secrets.sh ansible-playbook operations/migrate-research-cruise.yml"
+raw = true
+
 [tasks.inspect-storage]
 description = "Read only: disks, their health and the backup storage on the Proxmox machines (plus Research Cruise's database)"
 run = "scripts/with-fleet-key.sh ansible-playbook operations/inspect-storage.yml"

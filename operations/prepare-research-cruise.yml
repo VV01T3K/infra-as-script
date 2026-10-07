@@ -1,0 +1,170 @@
+---
+# Restore a disposable candidate with no external network or public route.
+# Source app and database remain running. Candidate writes cannot reach email/Sentry.
+- name: Prepare and verify a private Research Cruise candidate
+  hosts: zoltan
+  gather_facts: false
+  vars_files: [../stages/5-services/gitops-config.yml]
+  vars:
+    repo: "{{ playbook_dir | dirname }}"
+    arcane_api: http://127.0.0.1:3552/api
+    gitops_only_stack: research-cruise
+    cruise_candidate: /root/research-cruise-candidate
+    cruise_transit: "{{ repo }}/build/research-cruise-candidate"
+    cruise_verified_backup: ResearchCruiseApp-20261005-2234Z.bak
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        X-Api-Key: "{{ service_secrets.arcane_api_key }}"
+      body_format: json
+  tasks:
+    - name: Preserve the original credentials
+      ansible.builtin.include_tasks: tasks/research-cruise-credentials.yml
+    - name: Explicitly request the stopped project sync
+      ansible.builtin.set_fact:
+        gitops_sync_now: true
+    - name: Sync only Research Cruise and inject its preserved credentials
+      ansible.builtin.include_tasks: ../stages/5-services/tasks/gitops-reconcile.yml
+    - name: Resolve the project through Arcane's actual mounts
+      ansible.builtin.include_tasks: tasks/research-cruise-project.yml
+    - name: Refuse an existing candidate or live target database
+      ansible.builtin.shell: |
+        set -eu
+        test -z "$(docker ps -aq --filter name='^researchcruiseapp-db$' --filter name='^cruise-candidate-db$')"
+        ! docker volume inspect researchcruiseapp-db >/dev/null 2>&1
+        ! docker volume inspect research-cruise-candidate-db >/dev/null 2>&1
+      changed_when: false
+    - name: Create private candidate and transit directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: "0700"
+      delegate_to: "{{ item.host }}"
+      loop:
+        - { host: zoltan, path: "{{ cruise_candidate }}" }
+        - { host: localhost, path: "{{ cruise_transit }}" }
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python if item.host == 'localhost' else '/usr/bin/python3' }}"
+    - name: Fetch the previously verified recovery backup
+      ansible.builtin.fetch:
+        src: /mnt/pve/backup/research-cruise/{{ cruise_verified_backup }}
+        dest: "{{ cruise_transit }}/{{ cruise_verified_backup }}"
+        flat: true
+      delegate_to: torus
+    - name: Copy the recovery backup privately to the candidate
+      ansible.builtin.copy:
+        src: "{{ cruise_transit }}/{{ cruise_verified_backup }}"
+        dest: "{{ cruise_candidate }}/database.bak"
+        owner: "10001"
+        mode: "0600"
+    - name: Write private candidate overrides
+      ansible.builtin.copy:
+        dest: "{{ cruise_candidate }}/override.yaml"
+        mode: "0600"
+        content: |
+          services:
+            db:
+              container_name: cruise-candidate-db
+              volumes:
+                - {{ cruise_candidate }}/database.bak:/backup/database.bak:ro
+            backend:
+              container_name: cruise-candidate-backend
+              environment:
+                ConnectionStrings__Database: "Server=db,1433;Database=ResearchCruiseApp;User Id=sa;Password=${DB_PASSWORD};Encrypt=False"
+              networks: !override [database, application]
+            frontend:
+              container_name: cruise-candidate-frontend
+              networks: !override [application]
+              labels: !reset {}
+          volumes:
+            researchcruiseapp-db:
+              external: false
+              name: research-cruise-candidate-db
+          networks:
+            database:
+              name: research-cruise-candidate-network
+            application:
+              internal: true
+    - name: Write the private candidate environment
+      ansible.builtin.copy:
+        dest: "{{ cruise_candidate }}/environment"
+        content: "{{ gitops_env_content }}"
+        mode: "0600"
+      no_log: true
+    - name: Pull verified images and start only the isolated candidate database
+      ansible.builtin.shell: |
+        set -eu
+        docker compose {{ options }} config --quiet
+        docker compose {{ options }} pull
+        docker compose {{ options }} up -d --wait --wait-timeout 180 db
+      vars:
+        options: >-
+          -p research-cruise-candidate --env-file {{ cruise_candidate }}/environment
+          -f {{ cruise_compose }} -f {{ cruise_candidate }}/override.yaml
+      changed_when: true
+    - name: Restore the candidate and prove its database integrity
+      ansible.builtin.shell: |
+        set -eu
+        docker exec cruise-candidate-db sh -c '
+          exec /opt/mssql-tools18/bin/sqlcmd -S 127.0.0.1 -U sa -P "$MSSQL_SA_PASSWORD" -C -b -Q "$0"
+        ' "RESTORE DATABASE [ResearchCruiseApp] FROM DISK = N'/backup/database.bak' WITH CHECKSUM, RECOVERY;
+           DBCC CHECKDB ([ResearchCruiseApp]) WITH NO_INFOMSGS, ALL_ERRORMSGS;"
+      changed_when: true
+    - name: Start the private candidate frontend and backend
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - "-p"
+          - research-cruise-candidate
+          - "--env-file"
+          - "{{ cruise_candidate }}/environment"
+          - "-f"
+          - "{{ cruise_compose }}"
+          - "-f"
+          - "{{ cruise_candidate }}/override.yaml"
+          - up
+          - "-d"
+          - "--wait"
+          - "--wait-timeout"
+          - "180"
+      changed_when: true
+    - name: Prove frontend proxying and authentication against the recovered database
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -c
+          - |
+            import json, subprocess
+            def run(*args):
+                return subprocess.check_output(['docker',*args],text=True)
+            cs=json.loads(run('inspect','cruise-candidate-db','cruise-candidate-backend','cruise-candidate-frontend'))
+            for c in cs:
+                assert c['State']['Running'] and c['RestartCount']==0
+                assert not any(c['NetworkSettings']['Ports'].values())
+                for net in c['NetworkSettings']['Networks']:
+                    assert json.loads(run('network','inspect',net))[0]['Internal'], net
+            assert cs[1]['State']['Health']['Status']=='healthy'
+            version=run('exec','cruise-candidate-frontend','wget','-qO-','http://127.0.0.1:8080/api/version').strip()
+            assert version
+            p=subprocess.run(['docker','exec','cruise-candidate-frontend','wget','-S','-O','/dev/null','http://127.0.0.1:8080/api/v2/users/me'],capture_output=True,text=True)
+            assert '401' in p.stderr, p.stderr
+            print('Recovered candidate: frontend and API version '+version)
+            print('Authentication requires login; all networks internal; no published ports or restarts.')
+      register: cruise_candidate_result
+      changed_when: false
+    - name: Report candidate verification
+      ansible.builtin.debug:
+        var: cruise_candidate_result.stdout
+    - name: Record the prepared project path privately for cutover
+      ansible.builtin.copy:
+        dest: "{{ cruise_candidate }}/project-path"
+        content: "{{ cruise_compose }}\n"
+        mode: "0600"
+    - name: Remove local backup transit
+      ansible.builtin.file:
+        path: "{{ cruise_transit }}"
+        state: absent
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"

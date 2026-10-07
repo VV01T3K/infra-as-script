@@ -5,6 +5,11 @@ gitops_repositories:
     authType: none
     enabled: true
 
+  - name: research-cruise
+    url: https://github.com/VV01T3K/ResearchCruiseApp.git
+    authType: none
+    enabled: true
+
 # Environment names are resolved against Arcane at runtime; zoltan uses ID 0.
 # No live applications or bootstrap projects are adopted here.
 gitops_stacks:
@@ -60,6 +65,25 @@ gitops_stacks:
     syncDirectory: false
     secrets:
       CROWDSEC_API_KEY: crowdsec_api_key
+
+  - name: research-cruise
+    environment: zoltan
+    repository: research-cruise
+    branch: staging
+    composePath: docker/arcane/compose.yaml
+    autoSync: false # enable after restore, cutover and deployment verification
+    syncInterval: 5
+    syncDirectory: false
+    secrets:
+      DB_PASSWORD: cruise_db_password
+      DB_CONNECTION_STRING: cruise_db_connection_string
+      SMTP_USERNAME: cruise_smtp_username
+      SMTP_PASSWORD: cruise_smtp_password
+      JWT_SECRET: cruise_jwt_secret
+      SENTRY_DSN_BACKEND: cruise_sentry_dsn_backend
+      SENTRY_DSN_FRONTEND: cruise_sentry_dsn_frontend
+      SENTRY_TRACES_SAMPLE_RATE: cruise_sentry_traces_sample_rate
+      SENTRY_REPLAYS_SESSION_SAMPLE_RATE: cruise_sentry_replays_session_sample_rate
 
 # Reconciliation alone never requests a sync. Enable after the source is pushed.
 gitops_sync_now: false
