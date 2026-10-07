@@ -51,7 +51,11 @@ dns_zones:
       - { name: zoltan, type: A, value: "{{ hostvars.zoltan.address }}" }
       - { name: engi, type: A, value: "{{ hostvars.engi.address }}" }
       - { name: nas, type: A, value: "{{ hostvars.nas.address }}" } # OpenMediaVault
+      # Web UIs of other guests, served by Caddy (stage 5, "Caddy routes"). nas itself stays direct (SMB).
+      - { name: pdm, type: A, value: "{{ hostvars[groups.proxy | first].address }}" } # Proxmox Datacenter Manager
+      - { name: omv, type: A, value: "{{ hostvars[groups.proxy | first].address }}" } # OpenMediaVault's web UI
       - { name: arcane, type: A, value: "{{ hostvars[groups.arcane_manager | first].address }}" } # through Caddy
+      - { name: cliproxy, type: A, value: "{{ hostvars[groups.cliproxy | first].address }}" } # through Caddy
       - { name: kestrel, type: A, value: "{{ hostvars.kestrel.address }}" }
       - { name: torus, type: A, value: "{{ hostvars.torus.address }}" }
       - { name: proxmox.raw, type: A, value: 10.1.0.2 } # kestrel's web UI (old name, kept)

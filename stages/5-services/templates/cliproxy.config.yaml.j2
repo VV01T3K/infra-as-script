@@ -1,0 +1,34 @@
+# Managed by stage 5 (infra-as-script): CLIProxyAPI's settings (v8 layout, see config.example.yaml upstream).
+# Omitted settings keep their defaults.
+config-version: 8
+
+server:
+  port: 8317
+  # Caddy's network: requests arrive from Caddy, which passes the real client address on (the panel bans
+  # an address after 5 wrong keys, which would otherwise lock out everyone).
+  trusted-proxies: [{{ cliproxy_caddy_subnet | to_json }}]
+
+management:
+  # Through Caddy, so never from localhost. The key is MANAGEMENT_PASSWORD (compose file).
+  allow-remote: true
+  secret-key: ""
+  # The panel is fetched from GitHub on first use only, never replaced on its own.
+  disable-auto-update-panel: true
+
+# Keys the clients send (Authorization: Bearer <key>); not the subscriptions' own credentials.
+access:
+  api-keys: {{ [service_secrets.cliproxy_api_key] | to_json }}
+
+routing:
+  # One subscription until its limit, then the next: their 5-hour windows start one after another instead of
+  # together, and a session keeps its prompt cache.
+  strategy: fill-first
+  # A thread stays on its subscription (prompt cache); it moves only when that one is unavailable.
+  session-affinity: true
+
+oauth:
+  auth-dir: /root/.cli-proxy-api
+
+observability:
+  usage:
+    usage-statistics-enabled: true # in memory only, shown in the panel

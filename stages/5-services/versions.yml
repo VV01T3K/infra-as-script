@@ -1,6 +1,7 @@
 # Pinned image versions of the platform services. To update: change here, then `mise run services`.
-arcane_version: v2.14.0 # manager and agents, always the same version
+arcane_version: v2.15.0 # manager and agents, always the same version
 technitium_version: 15.6.0
+cliproxy_version: v8.0.16 # image eceasy/cli-proxy-api (CLIProxyAPI's official one)
 # Caddy is built with two extra modules (templates/caddy.Dockerfile.j2): routes from Docker labels,
 # and certificates through Cloudflare DNS. The image tag carries the versions, so a change here rebuilds it.
 caddy_version: 2.11.6

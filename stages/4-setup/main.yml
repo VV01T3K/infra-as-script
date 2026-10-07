@@ -1,5 +1,5 @@
 # Stage 4: from "an empty Alpine guest" to "a guest ready for containers": Python, updates, Docker
-# (with memory accounting for its containers). VMs (Debian): updates.
+# (with memory accounting for its containers). Debian guests and VMs: updates.
 # Run: mise run setup   (one guest or VM only: mise run setup dns1)
 # Needs: stage 3 done (the guest exists and runs). Safe to re-run: every step checks first.
 # Ansible reaches each guest through its Proxmox machine (pct exec), see "guests" in inventory/hosts.yml.
@@ -25,8 +25,18 @@
         label: "{{ item.split()[0] }} {{ item.split()[1] }}"
       throttle: 1 # one machine at a time: they all write the same file
 
+# Guests differ by their "os" (inventory): Alpine guests are Docker hosts, Debian guests run Debian packages.
+- name: Sort the guests by their os
+  hosts: guests
+  gather_facts: false
+  tasks:
+    - name: Put each guest in the group os_<its os>
+      ansible.builtin.group_by:
+        key: os_{{ os }}
+      changed_when: false
+
 - name: Set up the guests
-  hosts: "{{ guest | default('guests') }}:&guests"
+  hosts: "{{ guest | default('guests') }}:&os_alpine"
   gather_facts: false
   tasks:
     # Alpine comes without Python, which every other Ansible step needs; "raw" runs a plain command.
@@ -115,6 +125,28 @@
     - name: Done
       ansible.builtin.debug:
         msg: "{{ inventory_hostname }} is ready for containers. Next: stage 5 (services)."
+
+# Debian guests: Python (the standard template may lack it) and all updates.
+- name: Set up the Debian guests
+  hosts: "{{ guest | default('guests') }}:&os_debian"
+  gather_facts: false
+  tasks:
+    # See "Install Python" above for why "executable" is needed.
+    - name: Install Python
+      ansible.builtin.raw: command -v python3 || { apt-get update && apt-get install -y python3; }
+      args:
+        executable: /bin/sh
+      register: debian_python
+      changed_when: "'Setting up' in debian_python.stdout"
+
+    - name: Install all updates
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} is up to date. Next: stage 5 (services)."
 
 # VMs run their own SSH server (keys from cloud-init, stage 3); the first login records the VM's host key.
 - name: Set up the VMs

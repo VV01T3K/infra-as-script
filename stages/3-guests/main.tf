@@ -51,9 +51,12 @@ locals {
   # Each guest's own settings on top of the group's ("vars"), like Ansible does.
   guest_group = local.inventory.all.children.guests
   guests      = { for name, guest in local.guest_group.hosts : name => merge(local.guest_group.vars, guest) }
-  template    = local.guest_group.vars.lxc_template
-  vm_group    = local.inventory.all.children.vms
-  vms         = { for name, vm in local.vm_group.hosts : name => merge(local.vm_group.vars, vm) }
+  templates   = local.guest_group.vars.lxc_templates
+  # One template download per machine and os its guests use, keyed "<machine>/<os>".
+  template_downloads = { for key in distinct([for g in local.guests : "${g.node}/${g.os}"]) :
+  key => { node = split("/", key)[0], os = split("/", key)[1] } }
+  vm_group = local.inventory.all.children.vms
+  vms      = { for name, vm in local.vm_group.hosts : name => merge(local.vm_group.vars, vm) }
   # Who may log in as root to a VM: exactly the public keys in keys/ (as on the Proxmox machines).
   admin_keys = [for f in sort(fileset("${path.module}/../../keys", "*.pub")) : trimspace(file("${path.module}/../../keys/${f}"))]
 }
@@ -67,16 +70,16 @@ provider "proxmox" {
   api_token = var.api_tokens[each.key]
 }
 
-# The Alpine template, downloaded by Proxmox itself on each machine that has guests.
+# The guests' templates, downloaded by Proxmox itself on each machine that has guests of that os.
 resource "proxmox_download_file" "lxc_template" {
-  for_each = toset([for guest in local.guests : guest.node])
-  provider = proxmox.machine[each.key]
+  for_each = local.template_downloads
+  provider = proxmox.machine[each.value.node]
 
-  node_name          = each.key
+  node_name          = each.value.node
   datastore_id       = "local"
   content_type       = "vztmpl"
-  url                = local.template.url
-  checksum           = local.template.sha512
+  url                = local.templates[each.value.os].url
+  checksum           = local.templates[each.value.os].sha512
   checksum_algorithm = "sha512"
   # A file of the same name that OpenTofu doesn't know (e.g. after its state lost track) is replaced.
   overwrite_unmanaged = true
@@ -99,8 +102,8 @@ resource "proxmox_virtual_environment_container" "guest" {
   }
 
   operating_system {
-    template_file_id = proxmox_download_file.lxc_template[each.value.node].id
-    type             = "alpine"
+    template_file_id = proxmox_download_file.lxc_template["${each.value.node}/${each.value.os}"].id
+    type             = each.value.os
   }
 
   cpu {
@@ -137,6 +140,12 @@ resource "proxmox_virtual_environment_container" "guest" {
     dns {
       servers = [local.networks[each.value.network].gateway]
     }
+  }
+
+  # The template only seeds a new guest; a newer template (or a moved download) must never rebuild an existing one.
+  # (2026-10-06: a template that looked gone forced the replacement of every LXC.)
+  lifecycle {
+    ignore_changes = [operating_system[0].template_file_id]
   }
 }
 
@@ -240,4 +249,15 @@ resource "proxmox_virtual_environment_vm" "vm" {
   lifecycle {
     ignore_changes = [disk[0].import_from]
   }
+}
+
+# The template downloads used to be keyed by machine only; same files, new keys (nothing is downloaded again).
+moved {
+  from = proxmox_download_file.lxc_template["kestrel"]
+  to   = proxmox_download_file.lxc_template["kestrel/alpine"]
+}
+
+moved {
+  from = proxmox_download_file.lxc_template["torus"]
+  to   = proxmox_download_file.lxc_template["torus/alpine"]
 }

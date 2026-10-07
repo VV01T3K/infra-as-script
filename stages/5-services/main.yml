@@ -1,18 +1,24 @@
-# Stage 5: the platform services: Caddy (HTTPS proxy), Arcane (manager + agents), the DNS cluster (Technitium)
-# and OpenMediaVault (the VM "nas").
+# Stage 5: the platform services: Caddy (HTTPS proxy), Arcane (manager + agents), the DNS cluster (Technitium),
+# OpenMediaVault (the VM "nas"), Proxmox Datacenter Manager (the guest "pdm") and CLIProxyAPI.
 # Run: mise run services   (one part only: add e.g. --tags dns)
 # Needs: stage 4 done for the guests, and cloudflare_api_token in secrets/services.sops.yaml.
 # Two YubiKey touches: the fleet key, then the service secrets.
-# Parts (tags): proxy, arcane, agents, dns, nas. Apps come later from services/ through Arcane's GitOps.
+# Parts (tags): proxy, arcane, agents, dns, nas, pdm, cliproxy. Apps come later from services/ through Arcane's GitOps.
 # Every API call runs inside the guest against 127.0.0.1, so no password crosses the network.
 
 - name: Prepare the service secrets
-  hosts: guests:vms
+  hosts: guests:vms:proxmox
   gather_facts: false
   tags: [always]
   vars:
     repo: "{{ playbook_dir | dirname | dirname }}"
   tasks:
+    # Docker (Arcane agents) runs only on the Alpine guests.
+    - name: Put each guest in the group os_<its os>
+      ansible.builtin.group_by:
+        key: os_{{ os | default('none') }}
+      changed_when: false
+
     - name: Read the service secrets (unlocked by scripts/with-service-secrets.sh)
       ansible.builtin.set_fact:
         service_secrets: "{{ lookup('ansible.builtin.env', 'SERVICE_SECRETS') | default('{}', true) | from_json }}"
@@ -36,11 +42,15 @@
           nas_admin_password: "{{ password }}"
           nas_root_password: "{{ password }}" # console login of the VM nas (SSH takes keys only)
           nas_user_password: "{{ password }}" # the NAS user (SMB login), see nas_user
+          pdm_root_password: "{{ password }}" # PDM web UI (root, Linux PAM) and the guest's console
+          pdm_tokens: {} # API token secret of PDM on each Proxmox machine (filled by the part "pdm")
           arcane_admin_password: "{{ password }}-{{ lookup('ansible.builtin.password', '/dev/null', length=4, chars=['digits']) }}"
           arcane_encryption_key: "{{ password }}"
           # Arcane accepts only keys of the form arc_<hex>.
           arcane_api_key: "arc_{{ lookup('ansible.builtin.password', '/dev/null', length=64, chars=['hexdigits']) | lower }}"
           arcane_agent_tokens: {}
+          cliproxy_management_key: "{{ password }}" # CLIProxyAPI's panel
+          cliproxy_api_key: "sk-{{ password }}" # what AI clients send to CLIProxyAPI
       run_once: true
       no_log: true
 
@@ -73,6 +83,7 @@
       vars:
         compose_name: caddy
         compose_template: caddy.compose.yaml.j2
+        compose_dirs: [/opt/caddy/backends]
         compose_files:
           caddy.Dockerfile.j2: Dockerfile
           Caddyfile.j2: Caddyfile
@@ -177,10 +188,10 @@
       when: arcane_settings_now != arcane_settings
       no_log: true
 
-# --- 3. Arcane agents: every guest except the manager's ---
+# --- 3. Arcane agents: every Docker guest except the manager's ---
 
 - name: Arcane agents
-  hosts: guests:!arcane_manager
+  hosts: os_alpine:!arcane_manager
   gather_facts: false
   tags: [agents]
   vars_files: [versions.yml]
@@ -540,6 +551,39 @@
     - name: Data disk, shared folders, user and SMB
       ansible.builtin.include_tasks: tasks/nas-storage.yml
 
+    # The web UI over HTTPS only, with OMV's own self-signed certificate for nas.<domain>. Caddy serves it as
+    # https://omv.<domain> and trusts exactly this certificate (the part "Caddy routes", at the end).
+    - name: Read OMV's web UI settings and certificates
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - omv-rpc -u admin WebGui getSettings
+        - omv-confdbadm read conf.system.certificate.ssl
+      register: omv_web
+      changed_when: false
+      no_log: true # the certificate list includes private keys
+
+    - name: Create the web UI's certificate (self-signed, 10 years, for nas.{{ domain }})
+      ansible.builtin.command:
+        argv: [omv-rpc, -u, admin, CertificateMgmt, create, "{{ cert | to_json }}"]
+      vars:
+        cert: { size: 2048, days: 3650, c: "", st: "", l: "", o: "", ou: "", cn: "{{ inventory_hostname }}.{{ domain }}", email: "" }
+      register: omv_new_cert
+      changed_when: true
+      when: (omv_web.results[0].stdout | from_json).sslcertificateref not in omv_web.results[1].stdout | from_json | map(attribute='uuid')
+      no_log: true # the answer includes the private key
+
+    - name: Serve the web UI over HTTPS only (port 443)
+      ansible.builtin.command:
+        argv: [omv-rpc, -u, admin, WebGui, setSettings, "{{ wanted | to_json }}"]
+      vars:
+        current: "{{ omv_web.results[0].stdout | from_json }}"
+        ref: "{{ (omv_new_cert.stdout | from_json).uuid if omv_new_cert is changed else current.sslcertificateref }}"
+        wanted: "{{ {'port': 80, 'enablessl': true, 'sslport': 443, 'forcesslonly': true, 'sslcertificateref': ref, 'timeout': current.timeout} }}"
+      changed_when: true
+      when: >-
+        not current.enablessl | bool or not current.forcesslonly | bool or current.sslport | int != 443
+        or current.sslcertificateref != ref
+
     # OMV marks modules as "pending" when its settings change (setup, SSH, network above); its web UI then asks
     # to apply them. Applying all pending ones is what the UI's checkmark does.
     - name: Check whether OpenMediaVault has pending changes
@@ -554,8 +598,317 @@
       changed_when: true
       when: omv_dirty.stdout | trim | from_json | bool
 
-    - name: Check that the web UI answers
+    # Only that it answers; its certificate is checked by Caddy (the part "Caddy routes").
+    - name: Check that the web UI answers (HTTPS)
       ansible.builtin.uri:
-        url: http://{{ address }}/
+        url: https://{{ address }}/
+        validate_certs: false
         status_code: 200
       delegate_to: localhost
+
+# --- 6. Proxmox Datacenter Manager (PDM) on the Debian guest "pdm" ---
+# One web UI for torus and kestrel (not clustered): https://pdm.lab.wsiwiec.com:8443, login root (Linux PAM),
+# password pdm_root_password. PDM reaches each machine's API with its own token of the user pdm@pve, whose role
+# can see everything and start, stop and migrate guests (no root, unlike PDM's own setup wizard). Stage 2's
+# firewall lets pdm reach port 8006 (api_from).
+
+- name: PDM's access to the Proxmox machines
+  hosts: proxmox
+  tags: [pdm]
+  gather_facts: false
+  vars:
+    pdm_privileges:
+      - Sys.Audit # node status, tasks, updates
+      - VM.Audit # guests and their settings
+      - Datastore.Audit # storages
+      - SDN.Audit # networks
+      - Pool.Audit # resource pools
+      - Mapping.Audit # USB/PCI mappings
+      - VM.PowerMgmt # start, stop, shut down, restart guests
+      - VM.Migrate # migrate guests
+    # The machines whose token was made in this run.
+    made: "{{ ansible_play_hosts | map('extract', hostvars) | selectattr('pdm_new_token.stdout', 'defined') | map(attribute='inventory_hostname') | list }}"
+  tasks:
+    - name: Read the roles, users and tokens
+      ansible.builtin.command: pvesh get {{ item }} --output-format json
+      loop: [/access/roles, /access/users, /access/acl]
+      register: pdm_access
+      changed_when: false
+
+    - name: Give the role "PDM" exactly its privileges
+      ansible.builtin.command: pveum role {{ 'modify' if current else 'add' }} PDM --privs {{ wanted }}
+      vars:
+        current: "{{ pdm_access.results[0].stdout | from_json | selectattr('roleid', 'eq', 'PDM') | first | default({}) }}"
+        wanted: "{{ pdm_privileges | sort(case_sensitive=true) | join(',') }}"
+      changed_when: true
+      when: current.privs | default('') != wanted
+
+    - name: Create the user pdm@pve (token only, no password)
+      ansible.builtin.command: pveum user add pdm@pve --comment "Proxmox Datacenter Manager (infra-as-script)"
+      changed_when: true
+      when: "'pdm@pve' not in pdm_access.results[1].stdout | from_json | map(attribute='userid')"
+
+    - name: Grant it the role "PDM" on everything (/)
+      ansible.builtin.command: pveum acl modify / --users pdm@pve --roles PDM
+      changed_when: true
+      when: >-
+        pdm_access.results[2].stdout | from_json | selectattr('ugid', 'eq', 'pdm@pve')
+        | selectattr('path', 'eq', '/') | selectattr('roleid', 'eq', 'PDM') | list | length == 0
+
+    - name: Read the user's tokens
+      ansible.builtin.command: pvesh get /access/users/pdm@pve/token --output-format json
+      register: pdm_token_list
+      changed_when: false
+
+    # Made again when the machine doesn't have it or its secret is not in secrets/services.sops.yaml.
+    - name: Make the token pdm@pve!pdm (same rights as the user)
+      ansible.builtin.shell: |
+        pveum user token remove pdm@pve pdm 2>/dev/null
+        pveum user token add pdm@pve pdm --privsep 0 --output-format json
+      register: pdm_new_token
+      changed_when: true
+      when: >-
+        inventory_hostname not in service_secrets.pdm_tokens | default({})
+        or 'pdm' not in pdm_token_list.stdout | from_json | map(attribute='tokenid')
+      no_log: true
+
+    - name: Remember the new token secrets (all machines)
+      ansible.builtin.set_fact:
+        service_secrets: "{{ service_secrets | combine({'pdm_tokens': dict(made | zip(values))}, recursive=true) }}"
+      vars:
+        values: "{{ made | map('extract', hostvars, ['pdm_new_token', 'stdout']) | map('from_json') | map(attribute='value') | list }}"
+      run_once: true
+      when: made | length > 0
+      no_log: true
+
+    - name: Save them
+      ansible.builtin.include_tasks: tasks/save-secrets.yml
+      vars:
+        repo: "{{ playbook_dir | dirname | dirname }}"
+      when: made | length > 0
+
+    # PDM pins the certificate the machine's web API shows (its own, or Proxmox's default).
+    - name: Read the fingerprint of this machine's web API certificate
+      ansible.builtin.shell: |
+        cert=/etc/pve/local/pveproxy-ssl.pem
+        [ -e "$cert" ] || cert=/etc/pve/local/pve-ssl.pem
+        openssl x509 -in "$cert" -noout -fingerprint -sha256
+      register: pdm_api_cert
+      changed_when: false
+
+    - name: Remember it (the part after "sha256 Fingerprint=")
+      ansible.builtin.set_fact:
+        pdm_api_fingerprint: "{{ pdm_api_cert.stdout.split('=')[-1] | trim }}"
+
+- name: Proxmox Datacenter Manager
+  hosts: pdm
+  tags: [pdm]
+  tasks:
+    - name: Add Proxmox's signing key (checksum from the PDM docs)
+      ansible.builtin.get_url:
+        url: https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg
+        dest: /usr/share/keyrings/proxmox-archive-keyring.gpg
+        checksum: sha256:136673be77aba35dcce385b28737689ad64fd785a797e57897589aed08db6e45
+        mode: "0644"
+
+    - name: Add the free (no-subscription) PDM package source
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/proxmox.sources
+        content: |
+          # Managed by stage 5 (infra-as-script).
+          Types: deb
+          URIs: http://download.proxmox.com/debian/pdm
+          Suites: trixie
+          Components: pdm-no-subscription
+          Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+        mode: "0644"
+
+    # PDM's package ships the paid source (a conffile), which answers 401 without a subscription and breaks
+    # every apt update. Written first, turned off; dpkg then keeps this version (apt's force-confold).
+    - name: Turn off the paid (enterprise) PDM package source
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/pdm-enterprise.sources
+        content: |
+          # Managed by stage 5 (infra-as-script): needs a subscription.
+          Types: deb
+          URIs: https://enterprise.proxmox.com/debian/pdm
+          Suites: trixie
+          Components: pdm-enterprise
+          Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+          Enabled: false
+        mode: "0644"
+
+    # The PDM package adds Proxmox's paid (enterprise) source, which needs a subscription; while it is on, every
+    # package update fails with "401 Unauthorized". Turned off wherever it appears.
+    - name: Find Proxmox's paid (enterprise) package sources
+      ansible.builtin.command: grep -l enterprise.proxmox.com -r /etc/apt/sources.list.d
+      register: pdm_enterprise
+      changed_when: false
+      failed_when: pdm_enterprise.rc > 1 # 1 = none found
+
+    - name: Turn them off
+      ansible.builtin.lineinfile:
+        path: "{{ item }}"
+        regexp: "^Enabled:"
+        line: "Enabled: false"
+      loop: "{{ pdm_enterprise.stdout_lines }}"
+
+    # The container package: PDM without a kernel of its own (pdm.proxmox.com/docs, installation).
+    - name: Install Proxmox Datacenter Manager (for containers)
+      ansible.builtin.apt:
+        name: proxmox-datacenter-manager-container-meta
+        update_cache: true
+
+    - name: Turn off the paid source if this install just added it
+      ansible.builtin.shell: |
+        for f in $(grep -l enterprise.proxmox.com -r /etc/apt/sources.list.d); do
+          grep -qx 'Enabled: false' "$f" || { sed -i '/^Enabled:/d' "$f"; echo 'Enabled: false' >> "$f"; echo "turned off $f"; }
+        done
+      register: pdm_enterprise_after
+      changed_when: "'turned off' in pdm_enterprise_after.stdout"
+
+    - name: Set root's password (PDM web UI and console, from secrets/services.sops.yaml)
+      ansible.builtin.user:
+        name: root
+        password: "{{ service_secrets.pdm_root_password | password_hash('sha512', (inventory_hostname | hash('sha256'))[16:32]) }}"
+      no_log: true
+
+    - name: Read PDM's remotes
+      ansible.builtin.command: proxmox-datacenter-manager-admin remote list --output-format json
+      register: pdm_remotes
+      changed_when: false
+
+    # Each Proxmox machine is one remote, named like the machine, with its address and certificate fingerprint.
+    - name: Add or update each Proxmox machine as a remote
+      ansible.builtin.command:
+        argv: "{{ (['proxmox-datacenter-manager-admin', 'remote'] + (['update', item] if exists else ['add', '--type', 'pve', '--id', item])
+                  + ['--nodes', nodes, '--authid', 'pdm@pve!pdm', '--token', hostvars[item].service_secrets.pdm_tokens[item]]) }}"
+      vars:
+        current: "{{ pdm_remotes.stdout | from_json | selectattr('id', 'eq', item) | first | default({}) }}"
+        exists: "{{ current | length > 0 }}"
+        nodes: "{{ hostvars[item].address }},fingerprint={{ hostvars[item].pdm_api_fingerprint }}"
+        # PDM lists each node as a property string: "[hostname=]<address>[,fingerprint=<fp>]".
+        current_nodes: "{{ current.nodes | default([]) | map('regex_replace', '^(?:.*,)?(?:hostname=)?([^,=]+)(?:,.*)?$', '\\1') | list }}"
+        current_fp: "{{ current.nodes | default([]) | map('regex_replace', '^.*fingerprint=([^,]+).*$|^.*$', '\\1') | list }}"
+        renewed: "{{ hostvars[item].pdm_new_token.stdout is defined }}"
+      loop: "{{ groups.proxmox }}"
+      changed_when: true
+      when: >-
+        not exists or renewed or current_nodes != [hostvars[item].address]
+        or current_fp | map('lower') | list != [hostvars[item].pdm_api_fingerprint | lower] or current.authid | default('') != 'pdm@pve!pdm'
+      no_log: true
+
+# --- 7. CLIProxyAPI: the AI subscriptions behind one API ---
+# https://cliproxy.lab.wsiwiec.com/v1 with cliproxy_api_key (secrets/services.sops.yaml). Subscriptions are logged
+# in once in its panel (/management.html, key cliproxy_management_key); their tokens stay in the volume "auths".
+
+- name: CLIProxyAPI
+  hosts: cliproxy
+  gather_facts: false
+  tags: [cliproxy]
+  vars_files: [versions.yml]
+  tasks:
+    - name: Read the address range of Caddy's network
+      ansible.builtin.command:
+        argv: [docker, network, inspect, caddy, --format, "{{ '{{' }}(index .IPAM.Config 0).Subnet{{ '}}' }}"]
+      register: caddy_network
+      changed_when: false
+
+    - name: Deploy CLIProxyAPI
+      ansible.builtin.include_tasks: tasks/compose.yml
+      vars:
+        cliproxy_caddy_subnet: "{{ caddy_network.stdout | trim }}"
+        compose_name: cliproxy
+        compose_template: cliproxy.compose.yaml.j2
+        compose_files:
+          cliproxy.config.yaml.j2: config.yaml
+
+    - name: Check the API from this computer (certificate and API key checked)
+      ansible.builtin.uri:
+        url: https://{{ cliproxy_host }}/v1/models
+        headers: { Authorization: "Bearer {{ service_secrets.cliproxy_api_key }}" }
+      delegate_to: localhost
+      register: cliproxy_check
+      until: cliproxy_check is succeeded
+      retries: 10
+      delay: 3
+      no_log: true
+
+# --- 8. Caddy routes to the web UIs of other guests ---
+# https://<name>.<domain> through Caddy (the wildcard certificate, no port, no browser warning) for web UIs that
+# don't run on Caddy's guest. Caddy reaches each over HTTPS and trusts exactly that guest's own self-signed
+# certificate (copied here; a rebuilt guest's new one is picked up by the next run). One file per route in
+# /opt/caddy/backends, which the Caddyfile imports. Runs last: it needs OMV's and PDM's certificates.
+
+- name: Caddy routes to other guests' web UIs
+  hosts: proxy
+  tags: [proxy, nas, pdm]
+  gather_facts: false
+  vars:
+    # name: the guest, its port, and the file of its web certificate there ("omv" = OMV's own, looked up).
+    caddy_backends:
+      pdm: { host: pdm, port: 8443, cert: /etc/proxmox-datacenter-manager/auth/api.pem }
+      omv: { host: nas, port: 443, cert: omv }
+  tasks:
+    - name: Find OMV's web UI certificate
+      ansible.builtin.command: omv-rpc -u admin WebGui getSettings
+      delegate_to: nas
+      register: omv_web_settings
+      changed_when: false
+
+    - name: Read each guest's certificate and the names it is valid for
+      ansible.builtin.shell: |
+        cat "$CERT"
+        openssl x509 -in "$CERT" -noout -ext subjectAltName
+      environment:
+        CERT: >-
+          {{ '/etc/ssl/certs/openmediavault-' ~ (omv_web_settings.stdout | from_json).sslcertificateref ~ '.crt'
+             if item.value.cert == 'omv' else item.value.cert }}
+      delegate_to: "{{ item.value.host }}"
+      loop: "{{ caddy_backends | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      register: backend_certs
+      changed_when: false
+
+    - name: Write each route and its trusted certificate
+      ansible.builtin.copy:
+        dest: /opt/caddy/backends/{{ item.0.item.key }}.{{ item.1 }}
+        content: "{{ caddy_file if item.1 == 'caddy' else pem }}"
+        mode: "0644"
+      vars:
+        pem: "{{ item.0.stdout | regex_search('-----BEGIN CERTIFICATE-----[\\s\\S]*?-----END CERTIFICATE-----') }}\n"
+        # The first DNS name in the certificate is the name Caddy expects it to show.
+        server_name: "{{ item.0.stdout | regex_search('DNS:([^,\\s]+)', '\\1') | first }}"
+        caddy_file: |
+          # Managed by stage 5 (infra-as-script): {{ item.0.item.key }}.{{ domain }} -> {{ item.0.item.value.host }}:{{ item.0.item.value.port }}
+          {{ item.0.item.key }}.{{ domain }} {
+          	reverse_proxy https://{{ hostvars[item.0.item.value.host].address }}:{{ item.0.item.value.port }} {
+          		transport http {
+          			tls_server_name {{ server_name }}
+          			tls_trust_pool file /etc/caddy/backends/{{ item.0.item.key }}.pem
+          		}
+          	}
+          }
+      loop: "{{ backend_certs.results | product(['pem', 'caddy']) | list }}"
+      loop_control:
+        label: "{{ item.0.item.key }}.{{ item.1 }}"
+      register: backend_files
+
+    - name: Restart Caddy for changed routes
+      ansible.builtin.command:
+        cmd: docker compose restart
+        chdir: /opt/caddy
+      changed_when: true
+      when: backend_files is changed # noqa: no-handler (needed before the check below)
+
+    - name: Check each route from this computer (certificate checked)
+      ansible.builtin.uri:
+        url: https://{{ item }}.{{ domain }}/
+        status_code: [200, 301, 302]
+      delegate_to: localhost
+      loop: "{{ caddy_backends.keys() | list }}"
+      register: route_check
+      until: route_check is succeeded
+      retries: 10
+      delay: 3

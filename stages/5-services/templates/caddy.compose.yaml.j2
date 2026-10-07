@@ -19,6 +19,7 @@ services:
       # Read only: Caddy only looks at the containers' labels.
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./backends:/etc/caddy/backends:ro # routes to other guests' web UIs (end of stage 5)
       - data:/data # certificates
       - config:/config
     networks: [caddy]

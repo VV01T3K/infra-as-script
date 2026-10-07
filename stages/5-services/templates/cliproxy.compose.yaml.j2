@@ -1,0 +1,27 @@
+# Managed by stage 5 (infra-as-script): CLIProxyAPI, one OpenAI/Claude/Gemini-compatible API in front of
+# the AI subscriptions logged in through its panel. Reached only through Caddy: https://{{ cliproxy_host }}
+# (API under /v1, panel at /management.html).
+services:
+  cliproxy:
+    image: eceasy/cli-proxy-api:{{ cliproxy_version }}
+    container_name: cliproxy
+    environment:
+      # The panel's login key. From the environment it is never written (hashed) into config.yaml.
+      MANAGEMENT_PASSWORD: {{ service_secrets.cliproxy_management_key | to_json }}
+      TZ: {{ locale.timezone }}
+    volumes:
+      # Written by stage 5; a change made in the panel is set back on the next run.
+      - ./config.yaml:/CLIProxyAPI/config.yaml
+      - auths:/root/.cli-proxy-api # the subscriptions' OAuth tokens
+    networks: [caddy]
+    labels:
+      caddy: "{{ cliproxy_host }}"
+      caddy.reverse_proxy: "{{ '{{' }}upstreams 8317{{ '}}' }}"
+    restart: unless-stopped
+
+networks:
+  caddy:
+    external: true # created by Caddy's compose project
+
+volumes:
+  auths:

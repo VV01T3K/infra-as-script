@@ -18,6 +18,9 @@ services:
       TZ: {{ locale.timezone }}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      # Keep the LXC's LXCFS CPU view inside Docker (guest CPU count and usage).
+      - /proc/cpuinfo:/proc/cpuinfo:ro
+      - /proc/stat:/proc/stat:ro
       - data:/app/data
       - /opt/arcane/projects:/opt/arcane/projects
     # Lets Arcane recognise its own container.

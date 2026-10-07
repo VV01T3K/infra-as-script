@@ -289,6 +289,42 @@
             (firewall_options_now.stdout | from_json).enable | default(0) | int != 1
             or (firewall_options_now.stdout | from_json).policy_in | default('') != 'DROP'
 
+        # One rule per guest in api_from: its address may reach port 8006. Rules this part made carry the comment
+        # "infra-as-script: API for <guest>"; exactly those for api_from exist, others of them are removed.
+        # (Adding or removing such a rule can't lock out admin_from, which goes through the IPSet.)
+        - name: Read the firewall rules
+          ansible.builtin.command: pvesh get /cluster/firewall/rules --output-format json
+          register: firewall_rules
+          changed_when: false
+
+        # Removals first and highest position first: removing a rule moves the ones after it up, and a new rule
+        # goes to the top (moving all others down), so positions read above are only valid before any addition.
+        - name: Remove such rules that are not (or no longer correctly) in api_from
+          ansible.builtin.command: pvesh delete /cluster/firewall/rules/{{ item.pos }}
+          loop: >-
+            {{ firewall_rules.stdout | from_json | selectattr('comment', 'defined')
+               | selectattr('comment', 'match', 'infra-as-script: API for ') | sort(attribute='pos', reverse=true) }}
+          loop_control:
+            label: "{{ item.comment }} ({{ item.source | default('') }})"
+          vars:
+            # "<comment>|<address>" of each wanted rule.
+            wanted: >-
+              {{ api_from | default([]) | map('regex_replace', '^', 'infra-as-script: API for ')
+                 | zip(api_from | default([]) | map('extract', hostvars, 'address')) | map('join', '|') | list }}
+          when: (item.comment ~ '|' ~ item.source | default('')) not in wanted
+          changed_when: true
+
+        - name: Let the guests in api_from reach the web API (port 8006)
+          ansible.builtin.command: >-
+            pvesh create /cluster/firewall/rules --type in --action ACCEPT --proto tcp --dport 8006 --enable 1
+            --source {{ hostvars[item].address }} --comment "infra-as-script: API for {{ item }}"
+          loop: "{{ api_from | default([]) }}"
+          changed_when: true
+          when: >-
+            firewall_rules.stdout | from_json | selectattr('comment', 'defined')
+            | selectattr('comment', 'eq', 'infra-as-script: API for ' ~ item)
+            | selectattr('source', 'eq', hostvars[item].address) | list | length == 0
+
     # --- 5. Backup disk: Proxmox storage "backup" (backups only), on the disk with serial backup_disk.serial ---
     # A normal run never erases anything. If the storage is missing (e.g. after reinstalling Proxmox) and the disk
     # holds one Linux filesystem, that filesystem is mounted as it is, keeping what's on it. Anything else (empty
