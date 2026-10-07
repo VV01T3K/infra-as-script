@@ -112,6 +112,9 @@
         compose_template: arcane.compose.yaml.j2
         compose_dirs: [/opt/arcane/projects]
 
+    - name: Prepare writable projects for the manager runtime user
+      ansible.builtin.include_tasks: tasks/arcane-project-storage.yml
+
     - name: Wait for Arcane's API
       ansible.builtin.uri:
         url: http://127.0.0.1:3552/api/environments

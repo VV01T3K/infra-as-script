@@ -8,6 +8,8 @@ services:
     ports:
       - "127.0.0.1:3552:3552"
     environment:
+      PUID: "65532"
+      PGID: "65532"
       ENCRYPTION_KEY: {{ service_secrets.arcane_encryption_key | to_json }}
       # Lets stage 5 configure Arcane through its API (sent as the X-Api-Key header).
       ADMIN_STATIC_API_KEY: {{ service_secrets.arcane_api_key | to_json }}

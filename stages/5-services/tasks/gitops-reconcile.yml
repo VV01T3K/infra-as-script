@@ -30,6 +30,9 @@
   ansible.builtin.include_tasks: save-secrets.yml
   when: gitops_secret is not skipped
 
+- name: Prepare manager project storage before sync
+  ansible.builtin.include_tasks: arcane-project-storage.yml
+
 - name: Read registered repositories and environments
   ansible.builtin.uri:
     url: "{{ arcane_api }}/{{ item }}"

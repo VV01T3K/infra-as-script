@@ -125,7 +125,12 @@ echo "Fleet key ready: keys/fleet.pub (private half only in secrets/fleet-ssh-ke
 
 [tasks.check]
 description = "Lint and validate everything"
-run = ["ansible-lint", "tofu -chdir=stages/3-guests fmt -check -diff", "tofu -chdir=network fmt -check -diff"]
+run = [
+  "ansible-lint",
+  "python scripts/check-frog-migration.py",
+  "tofu -chdir=stages/3-guests fmt -check -diff",
+  "tofu -chdir=network fmt -check -diff",
+]
 
 [tasks.pre-commit]
 description = "Runs before every commit: block secrets, then check"

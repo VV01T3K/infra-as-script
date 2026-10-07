@@ -1,0 +1,9 @@
+# Matches the manager's explicit PUID/PGID. Its root supervisor launches the
+# application as this user; only the mounted project directory belongs to it.
+- name: Let the manager write its project storage without opening bootstrap files
+  ansible.builtin.file:
+    path: /opt/arcane/projects
+    state: directory
+    owner: '65532'
+    group: '65532'
+    mode: '0700'
