@@ -54,6 +54,19 @@
       - gitops_sync_matches | length == 0 or gitops_sync_matches[0].mode == 'deploy'
     quiet: true
 
+# Manager connections reach agents through Arcane's resource sync. Creating a
+# mapping before that propagation returns HTTP 500 (repository not found).
+- name: Propagate manager repository configuration before creating agent mappings
+  ansible.builtin.uri:
+    url: "{{ gitops_environment_api }}/sync"
+    method: POST
+    timeout: 120
+  when:
+    - gitops_environment_ids[0] != '0'
+    - gitops_repositories_changed or gitops_sync_matches | length == 0
+  changed_when: false
+  no_log: true
+
 - name: Create a mapping with automatic sync disabled until secrets are ready
   ansible.builtin.uri:
     url: "{{ gitops_environment_api }}/gitops-syncs"
@@ -61,8 +74,20 @@
     body: "{{ gitops_sync_body | combine({'autoSync': false, 'mode': 'deploy'}) }}"
     status_code: [200, 201]
   when: gitops_sync_matches | length == 0
-  changed_when: true
+  register: gitops_mapping_created
+  failed_when: false
+  changed_when: gitops_mapping_created.status in [200, 201]
   no_log: true
+
+- name: Require mapping creation to succeed with a redacted API diagnostic
+  ansible.builtin.assert:
+    that: gitops_mapping_created.status in [200, 201]
+    fail_msg: >-
+      Arcane mapping creation failed (HTTP {{ gitops_mapping_created.status }}):
+      {{ gitops_mapping_created.json.detail | default(gitops_mapping_created.msg)
+         | replace(service_secrets.arcane_api_key, '[redacted]') }}
+    quiet: true
+  when: gitops_sync_matches | length == 0
 
 - name: Refresh the mapping after creation
   ansible.builtin.uri:

@@ -5,6 +5,9 @@ Supporting files belong inside that stack directory. Declare the repository,
 branch, path, environment and secret mapping in
 `stages/5-services/gitops-config.yml`; Arcane IDs are resolved at runtime.
 Manager, agent and Caddy bootstrap stays in `mise run services`.
+The playbook propagates manager repository configuration to a target agent
+before creating its first mapping; background propagation alone can race
+mapping creation in Arcane v2.15.0.
 
 The infrastructure repository is public and uses anonymous HTTPS access.
 Commit only nonsecret configuration. Private application repositories such as

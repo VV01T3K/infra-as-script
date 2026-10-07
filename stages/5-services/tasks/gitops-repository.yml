@@ -16,6 +16,7 @@
     body: "{{ gitops_repository }}"
     status_code: [200, 201]
   when: gitops_repo_matches | length == 0
+  register: gitops_repo_created
   changed_when: true
   no_log: true
 
@@ -31,4 +32,10 @@
     - gitops_repo_matches | length == 1
     - current != gitops_repository
   changed_when: true
+  register: gitops_repo_updated
   no_log: true
+
+- name: Record repository changes that must reach the agents
+  ansible.builtin.set_fact:
+    gitops_repositories_changed: >-
+      {{ gitops_repositories_changed or gitops_repo_created is changed or gitops_repo_updated is changed }}
