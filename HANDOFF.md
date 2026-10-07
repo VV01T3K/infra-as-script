@@ -2,9 +2,34 @@
 
 Prepared 2026-10-05. This document records the user's agreed target and implementation sequence. It supersedes the initial proposal to reproduce the old `core/internum/externum` layout. (At the time of writing implementation had not started; see "Current state and next steps" below for where things stand.)
 
-## Current state and next steps (updated 2026-10-07, read this first)
+## Next-session quick start (2026-10-07)
 
-The sections after this one are the original plan (2026-10-05) and a dated progress log. This section is the summary.
+**Resume with Arcane GitOps planning, not PDM debugging or another network apply.** The owner confirmed a healthy PDM dashboard after the firewall fix. No GitOps implementation was started in this session.
+
+### Repository checkpoint
+- Working directory: `/home/wojtek/Projects/infra-as-script`; remote: private `VV01T3K/infra-as-script`.
+- Verified before this handoff update: local `main` and GitHub `main` both at `6fc3121` (`chore(gitignore): ignore report log`), with no pending tracked changes. The earlier GitHub internal-server errors no longer leave the deployment commits unpublished.
+- `8e20bcf`: combined PDM/Debian support, Caddy web routes, CLIProxyAPI, Arcane v2.15.0 and CPU-reporting fixes.
+- `1462ad5`: PDM's UniFi API access rule, preserved device icons, encrypted network state and this migration handoff.
+- `6fc3121`: ignores `report.log`; leave the owner's file alone. This quick-start revision will be a subsequent documentation-only commit; use `git log` for its ID and recheck local/remote status rather than assuming it was pushed.
+
+### First actions
+1. Read this quick start, the current-state summary and the lessons below; older "not run yet" entries are chronological history, not a fresh to-do list.
+2. Check `git status --short --branch` and recent commits before editing. Coordinate one writer at a time; stage only intended files.
+3. Inspect the installed Arcane v2.15.0 GitOps documentation/API and this repo's service bootstrap. Inspect current `komoda-homelab` definitions separately; don't assume the old temporary checkout still exists or is current.
+4. Present a short GitOps implementation plan before writing code: choose the repository/stack layout, read-only GitHub deploy-key handling through SOPS, per-environment mappings and secrets, sync behaviour, and a harmless end-to-end verification. Manager/Caddy bootstrap remains independent of Arcane GitOps.
+5. Do not migrate live apps or retire guests as part of that first GitOps step. Research Cruise remains live on externum; its verified backup exists on both backup disks, but nightly automation and off-site copying are not implemented.
+
+### Verified and unverified boundaries
+- Owner's PDM screenshot confirms all remotes reachable, kestrel/torus online, 1 VM and 9 LXCs running. Guest start/stop and cross-node migration were not exercised; broader cross-node migration permissions are deferred.
+- No additional infrastructure apply was run during closeout. `mise run check`, both `tofu validate` roots and the commit's secret scan passed. Network state was confirmed encrypted without decrypting it.
+- The preview opened the PDM login screen, but the owner chose to provide a screenshot instead of signing in there. Do not ask them to paste credentials.
+- PBS and Proxmox guest backups were deliberately dropped. S3/Arcane backups and old-guest retirement remain later work. CLIProxyAPI subscription warm-up scheduling was only an optional idea, not implemented or required for GitOps.
+- Prior T3 thread: `6d614e48-1966-4e69-ba1a-c53b521a7c56` (Plan Infrastructure Migration). Its recovery point and decisions are recorded here; no need to re-read the full transcript to continue.
+
+## Current state and next steps (updated 2026-10-07)
+
+The sections after this summary are the original plan (2026-10-05) and a dated progress log. Prefer the quick start and current-state summary over earlier proposals and intermediate failures.
 
 ### What runs where now
 
@@ -18,7 +43,7 @@ The sections after this one are the original plan (2026-10-05) and a dated progr
 | torus | nas (VM, Debian 13 "generic") | 2040 / 10.20.0.40 | OpenMediaVault 8; USB HDD W380WY6S passed through (mapping nas-hdd), ext4 mounted; SMB share `wojtek` (user wojtek) | stages 2–5 |
 | torus | komoda 101, tailscale-box 105, internum 201, externum 301 | old | old apps incl. live Research Cruise staging (externum); HyperDX and Uptime Kuma on externum stopped (disk wear) | not managed; retire in step 7 |
 
-Secrets: `secrets/services.sops.yaml` (Arcane, Technitium, Cloudflare token, nas_admin/root/user passwords), `secrets/tofu.sops.yaml`, `secrets/fleet-ssh-key.sops.yaml`, per-host root passwords. All commands need the YubiKey (owner runs them; the agent cannot reach the machines).
+Secrets: `secrets/services.sops.yaml` (Arcane, Technitium, Cloudflare token, NAS passwords, PDM tokens/root password, CLIProxyAPI keys), `secrets/tofu.sops.yaml`, `secrets/fleet-ssh-key.sops.yaml`, per-host root passwords. Live Ansible/OpenTofu operations use the repo wrappers and require the owner's YubiKey PIN/touches to decrypt credentials; coordinate those runs with them. Offline lint/format/validation and Git operations do not require secret decryption. Do not expose plaintext credentials in logs, commits or chat.
 
 ### Done
 - Step 1 (stage 1–2 safety fixes), step 2 for Arcane (HTTPS through Caddy; router stays `allow_insecure`, owner's choice), step 3 (disk inspection; Research Cruise backup `ResearchCruiseApp-20261005-2234Z.bak` on both backup disks, test-restored), step 4 (zoltan/engi, Arcane on zoltan, OMV VM `nas`), step 5 chunk 1 (OMV data disk, user/share `wojtek`).
@@ -44,7 +69,9 @@ PDM connectivity is complete. Its role includes audit, guest power management an
 - Bash reads scripts while running: don't edit a script the owner is running.
 - Long jobs: check Ansible's async limit against the real duration (PBS datastore over NFS ≈ 1 h).
 
-## Starting point
+## Original starting point (2026-10-05; historical)
+
+These observations predate the deployments and live verification in the progress log. They are not the current Git checkpoint or service status.
 
 - Working repository: `/home/wojtek/Projects/infra-as-script`, private GitHub repository `VV01T3K/infra-as-script`.
 - Inspected HEAD: `main` at `c07dd59`. The user reports GitHub matches it, `new-layout` was deleted, and `old-layout` preserves the previous implementation. Recheck Git status before editing. An existing untracked `report.log` belongs to the user; leave it alone.
