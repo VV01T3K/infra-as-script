@@ -10,3 +10,4 @@
 /stages/3-guests/terraform.tfstate.backup
 /network/.terraform/
 /network/terraform.tfstate.backup
+report.log
