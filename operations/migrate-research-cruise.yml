@@ -84,7 +84,7 @@
           delegate_to: torus
           changed_when: true
         - name: Capture final row counts from the frozen source
-          ansible.builtin.command: "{{ cruise_sql_source }} '{{ cruise_counts }}'"
+          ansible.builtin.command: "{{ cruise_sql_source }} {{ cruise_counts | quote }}"
           delegate_to: torus
           register: cruise_source_counts
           changed_when: false
@@ -157,7 +157,7 @@
             ALTER DATABASE [ResearchCruiseApp] SET READ_WRITE;"
           changed_when: true
         - name: Verify all table row counts before starting application writers
-          ansible.builtin.command: "{{ cruise_sql_target }} '{{ cruise_counts }}'"
+          ansible.builtin.command: "{{ cruise_sql_target }} {{ cruise_counts | quote }}"
           register: cruise_target_counts
           changed_when: false
           failed_when: cruise_target_counts.stdout != cruise_source_counts.stdout

@@ -149,6 +149,7 @@ description = "Lint and validate everything"
 run = [
   "ansible-lint",
   "python scripts/check-frog-migration.py",
+  "python scripts/check-research-cruise-migration.py",
   "python scripts/check-proxy-security.py",
   "tofu -chdir=stages/3-guests fmt -check -diff",
   "tofu -chdir=network fmt -check -diff",
