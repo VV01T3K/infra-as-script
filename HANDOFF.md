@@ -2,7 +2,29 @@
 
 Prepared 2026-10-05. This document records the user's agreed target and implementation sequence. It supersedes the initial proposal to reproduce the old `core/internum/externum` layout. (At the time of writing implementation had not started; see "Current state and next steps" below for where things stand.)
 
-## Next-session quick start (2026-10-07)
+## Cloudflared cutover, 2026-10-08
+
+Cloudflared now runs on zoltan with four ready Cloudflare connections. The original connector on externum is stopped. Public checks, forced through public Cloudflare IPs rather than split DNS, passed after the original stopped: Research Cruise health/version 200, anonymous user 401, invalid Arcane deployment key 401. Caddy's live access log confirmed traffic from the dedicated connector address and the real visitor IP. No Research Cruise container or volume was recreated. CloudBeaver remains stopped.
+
+The private candidate passed verified TLS, health, invalid deployment-key rejection, method/path restrictions, client-IP spoof rejection and a real CrowdSec ban/unban. All production IDs/start times remained unchanged during each candidate check. Both deployment credential headers are removed from JSON access logs. Disposable containers and decisions were removed. Caddy alone was recreated for activation, including recovery from two refused attempts: a pre-created network ownership mismatch and a valid existing wildcard TLS origin name that the initial guard rejected too strictly.
+
+The owner changed tunnel `3305625d-9599-4d24-9742-07b3b76bf8ec` in the dashboard. The new connector's received configuration confirms exactly:
+
+- `cruise.wsiwiec.com -> https://caddy`.
+- `komodo_wb.wojtecs.com -> https://caddy`, HTTP Host Header `komodo.wsiwiec.com`, path `^/(listener/github/.*|api/environments/0/.*)$`.
+- Catchall 404; WARP routing disabled. Both origins retain `*.wsiwiec.com`, matching the preserved signed certificate, with TLS verification enabled.
+
+The DNS-only Cloudflare token returned HTTP 403 for tunnel configuration. **Cloudflare header-secret protection remains unverified:** a public POST to the Arcane sync URL without `X-Cloudflare-Secret` returned 401 from Arcane, rather than being blocked at the edge. The owner was asked to update the WAF/security rule to protect the entire webhook hostname or provide its redacted expression. Never log or request the secret in chat.
+
+GitHub staging sync/deploy URLs and `STAGING_DEPLOY_API_KEY` are configured. `STAGING_DEPLOY_ENABLED=false`; the existing Cloudflare secret is unchanged. Research Cruise PR #445 and infrastructure PR #2 remain unmerged. Staging still calls the original Komodo webhook. The new Caddy route preserves that exact procedure through externum, alongside only the two Arcane staging POST endpoints. Thus **moving Cloudflared does not yet make externum safe to stop**. Test/approve the replacement trigger before removing the old webhook relay. No staging deployment was triggered here; do not restart the stale original Research Cruise writers.
+
+Added only `cruise.wsiwiec.com -> 10.20.0.10` to internal DNS; both Technitium servers independently returned it. Other legacy DNS records are unchanged. The laptop still has a cached old wildcard answer, so retain the old Research Cruise relay through cache expiry. The new connector and deployment fallback do not depend on this relay.
+
+Recovery files are root-only under `/root/cloudflared-cutover` on zoltan. `prepare-cloudflared` refuses existing preparation; `verify-cloudflared` runs an unpublished candidate and removes its test resources; `activate-cloudflared` guards the verified files/image, starts the connector, checks the received rules/readiness and application identities, and restores Caddy on failure. `finish-cloudflared` verifies public traffic after stopping the old connector and restarts it on failure if it was running. Normal bootstrap retains the tunnel through `/opt/caddy/tunnel-enabled`; an absent marker leaves fresh bootstrap independent of tunnel recovery. The image digest and tunnel token are encrypted in service secrets.
+
+The live Arcane mapping still polls `docker/arcane/compose.yaml`; PR #2's correction has not been applied. Scheduled backups, approved deployment testing, legacy app/data decisions and LXC retirement remain later work. All three legacy LXCs remain running; only the original Cloudflared connector was stopped.
+
+## Previous-session quick start (2026-10-07; superseded by the cutover above)
 
 **Research Cruise is migrated and verified on zoltan through its own public repository and Arcane. Resume with Cloudflared. Its existing route still crosses externum's Caddy and a temporary TLS-verified relay; keep that path alive until the tunnel moves. CloudBeaver stays stopped by the owner's latest decision.** The public repository uses anonymous HTTPS; the isolated canary on engi has verified manual sync, secret preservation, unchanged-sync behavior and automatic five-minute polling.
 
