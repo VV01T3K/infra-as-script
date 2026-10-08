@@ -70,8 +70,8 @@ gitops_stacks:
     environment: zoltan
     repository: research-cruise
     branch: staging
-    composePath: docker/arcane/compose.yaml
-    autoSync: true # restored database, public origin and protection verified
+    composePath: docker/compose.staging.yaml
+    autoSync: false # the staging workflow syncs only after both image builds succeed
     syncInterval: 5
     syncDirectory: false
     secrets:
