@@ -118,11 +118,16 @@ CloudBeaver is still stopped and has no published ports.
 
 ## Research Cruise
 
-The separate public `ResearchCruiseApp` repository owns `docker/arcane/compose.yaml`
-on `staging`. The build workflow publishes immutable frontend/backend digests back
-into that file; Arcane polling redeploys the running project from those commits.
-Infrastructure owns the repository mapping and preserved SOPS-backed overrides.
-The deployment gate `ARCANE_STAGING_READY=true` is enabled after verified cutover.
+The separate public `ResearchCruiseApp` repository owns `docker/compose.staging.yaml`
+on `staging`. After both image builds succeed, its deployment script syncs the
+Compose file, then applies the project with fresh images and no forced recreation.
+Polling is disabled so configuration cannot deploy before the builds finish.
+Infrastructure supplies the repository mapping and preserved SOPS-backed overrides.
+The workflow uses `STAGING_SYNC_URL` (`/api/environments/0/gitops-syncs/<sync-id>/sync`),
+`STAGING_DEPLOY_URL` (`/api/environments/0/projects/<project-id>/up`), and the secrets
+`STAGING_DEPLOY_API_KEY` and `CLOUDFLARE_WEBHOOK_SECRET`. Enable
+`STAGING_DEPLOY_ENABLED=true` only after the authenticated route and deployment
+have been tested and approved.
 
 `mise run prepare-research-cruise` restores a private candidate with no external
 network or public route. `mise run migrate-research-cruise` is a guarded one-time
