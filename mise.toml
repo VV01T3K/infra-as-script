@@ -111,6 +111,26 @@ description = "Back up Research Cruise's live database (on zoltan) to both backu
 run = "scripts/with-fleet-key.sh ansible-playbook operations/research-cruise-backup.yml"
 raw = true # interactive: YubiKey touch + PIN to unlock the fleet key
 
+[tasks.prepare-cloudflared]
+description = "Prepare a stopped tunnel connector and protected deployment routes"
+run = "scripts/with-fleet-key.sh scripts/with-service-secrets.sh python scripts/migrate-cloudflared.py prepare"
+raw = true
+
+[tasks.activate-cloudflared]
+description = "Start the verified connector only after the dashboard ingress matches"
+run = "scripts/with-fleet-key.sh python scripts/migrate-cloudflared.py activate"
+raw = true
+
+[tasks.finish-cloudflared]
+description = "Stop the old connector with public-origin verification and automatic restart on failure"
+run = "scripts/with-fleet-key.sh python scripts/migrate-cloudflared.py finish"
+raw = true
+
+[tasks.verify-cloudflared]
+description = "Check TLS, deployment restrictions and client-IP protection with a private Caddy"
+run = "scripts/with-fleet-key.sh python scripts/verify-cloudflared.py"
+raw = true
+
 [tasks.inspect-retained-apps]
 description = "Read only: retained app versions, volumes, capacity, proxy routes and tunnel origins"
 run = "scripts/with-fleet-key.sh ansible-playbook operations/inspect-retained-apps.yml"

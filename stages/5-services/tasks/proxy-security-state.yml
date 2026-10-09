@@ -9,3 +9,12 @@
 - name: Retain the proxy-security state across bootstrap and backend-only updates
   ansible.builtin.set_fact:
     caddy_security_enabled: "{{ proxy_security_marker.stat.exists }}"
+
+- name: Read the Cloudflared activation marker
+  ansible.builtin.stat:
+    path: /opt/caddy/tunnel-enabled
+  register: proxy_tunnel_marker
+
+- name: Retain the dedicated tunnel network and client-IP trust
+  ansible.builtin.set_fact:
+    caddy_tunnel_enabled: "{{ proxy_tunnel_marker.stat.exists }}"
