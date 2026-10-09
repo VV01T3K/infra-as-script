@@ -6,6 +6,13 @@
 # (Caddy does that by itself): one certificate for all, and the public certificate logs show only
 # *.{{ domain }}, not each name.
 {
+{% if caddy_tunnel_enabled | default(false) | bool %}
+	servers {
+		trusted_proxies static 172.31.255.2/32
+		trusted_proxies_strict
+		client_ip_headers CF-Connecting-IP
+	}
+{% endif %}
 	# Let's Encrypt. A test run can use its staging server instead (untrusted certificates, but no risk
 	# to the real rate limits): mise run services --tags proxy -e caddy_acme_staging=true
 	acme_ca {{ 'https://acme-staging-v02.api.letsencrypt.org/directory' if caddy_acme_staging | default(false) | bool else 'https://acme-v02.api.letsencrypt.org/directory' }}
@@ -31,7 +38,17 @@
 (protected) {
 	log {
 		output stdout
+{% if caddy_tunnel_enabled | default(false) | bool %}
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Api-Key delete
+				request>headers>X-Cloudflare-Secret delete
+			}
+		}
+{% else %}
 		format json
+{% endif %}
 	}
 	crowdsec
 }

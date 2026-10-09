@@ -27,7 +27,15 @@ services:
       - ./backends:/etc/caddy/backends:ro # routes to other guests' web UIs (end of stage 5)
       - data:/data # certificates
       - config:/config
-    networks: {{ '[caddy, security]' if caddy_security_enabled | default(false) | bool else '[caddy]' }}
+    networks:
+      caddy: {}
+{% if caddy_security_enabled | default(false) | bool %}
+      security: {}
+{% endif %}
+{% if caddy_tunnel_enabled | default(false) | bool %}
+      tunnel:
+        ipv4_address: 172.31.255.3
+{% endif %}
     restart: unless-stopped
 
 networks:
@@ -37,6 +45,12 @@ networks:
   security:
     external: true
     name: caddy_security
+{% endif %}
+
+{% if caddy_tunnel_enabled | default(false) | bool %}
+  tunnel:
+    name: cloudflare_ingress
+    external: true
 {% endif %}
 
 volumes:

@@ -71,5 +71,6 @@ dns_zones:
   wsiwiec.com:
     type: forwarder # our records first, the rest from the internet
     records:
+      - { name: cruise, type: A, value: "{{ hostvars[groups.proxy | first].address }}" }
       - { name: "@", type: ANAME, value: externum.lab.wsiwiec.com }
       - { name: "*", type: A, value: 10.20.0.100 } # externum

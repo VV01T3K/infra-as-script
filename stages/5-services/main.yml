@@ -95,6 +95,23 @@
           caddy.Dockerfile.j2: Dockerfile
           Caddyfile.j2: Caddyfile
 
+- name: Cloudflared connector after verified tunnel cutover
+  hosts: proxy
+  gather_facts: false
+  tags: [cloudflared]
+  tasks:
+    - name: Read the verified tunnel activation state
+      ansible.builtin.stat:
+        path: /opt/caddy/tunnel-enabled
+      register: cloudflared_marker
+
+    - name: Deploy the retained connector
+      ansible.builtin.include_tasks: tasks/compose.yml
+      vars:
+        compose_name: cloudflared
+        compose_template: cloudflared.compose.yaml.j2
+      when: cloudflared_marker.stat.exists
+
 # --- 2. Arcane manager ---
 
 - name: Arcane manager
