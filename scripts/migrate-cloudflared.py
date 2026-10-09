@@ -124,7 +124,7 @@ def prepare():
     assert len(mapping) == 1 and mapping[0]['projectId']
     sync_path = '/api/environments/0/gitops-syncs/' + mapping[0]['id'] + '/sync'
     deploy_path = '/api/environments/0/projects/' + mapping[0]['projectId'] + '/up'
-    routes = f'''# Only the two Arcane endpoints and the existing Komodo procedure are exposed.
+    routes = f'''# Only the two Arcane staging endpoints are exposed.
 komodo.wsiwiec.com {{
     import protected
     @deploy {{
@@ -134,18 +134,6 @@ komodo.wsiwiec.com {{
     }}
     handle @deploy {{
         reverse_proxy arcane:3552
-    }}
-    @legacy {{
-        method POST
-        remote_ip 172.31.255.2/32
-        path /listener/github/procedure/695bdc102652deb41b6ef3ec/__ANY__
-    }}
-    handle @legacy {{
-        reverse_proxy https://10.20.0.100 {{
-            transport http {{
-                tls_server_name komodo.wsiwiec.com
-            }}
-        }}
     }}
     handle {{
         respond 404

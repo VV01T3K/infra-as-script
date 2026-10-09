@@ -111,10 +111,9 @@ unhealthy dependencies block updates. A fresh bootstrap has no marker and can st
 Caddy/Arcane before restoring application data. Subsequent Caddy changes use the
 normal platform bootstrap, rather than importing the old filesystem assets again.
 
-The existing tunnel includes `cruise.wsiwiec.com -> https://caddy` on externum.
-Research Cruise now has a verified origin on zoltan. A temporary TLS-verified relay
-on externum carries the existing tunnel traffic until Cloudflared migrates.
-CloudBeaver is still stopped and has no published ports.
+The existing tunnel serves `cruise.wsiwiec.com -> https://caddy` on zoltan.
+Research Cruise and its deployment endpoints are verified there. Externum is retired;
+CloudBeaver remains stopped with its workspace preserved on the retained disk.
 
 ## Research Cruise
 
@@ -137,11 +136,12 @@ traffic opens, failure restores the original writers; after that boundary, keep 
 new database authoritative and preserve new writes before any rollback.
 
 The migration is verified, including a subsequent CI-published image deployment.
-SQL Server uses an internal network and a restored external volume, with no published
-port. CloudBeaver remains stopped and unexposed by the owner's latest decision.
+SQL Server uses the stack's implicit default network and a restored external volume,
+with no published port. CloudBeaver remains stopped and unexposed by the owner's latest decision.
 `mise run research-cruise-backup` now backs up zoltan by default, requires both mounted
 backup disks, and proves the backup with an isolated SQL restore, DBCC CHECKDB and all
 table counts. Scheduled and off-site backups remain later work.
 
-Cloudflared still runs on externum. Keep its Caddy/relay dependencies until the tunnel
-is moved, ingress is narrowed to retained routes, and client-IP trust is verified.
+Cloudflared runs on zoltan. The legacy Komodo relay and GitHub webhook are disabled.
+Komoda, internum and externum are stopped with automatic startup disabled; their
+disks are retained for recovery. See the retirement record in `HANDOFF.md`.

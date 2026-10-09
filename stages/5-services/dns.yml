@@ -39,9 +39,8 @@ dns_blocklists:
 # so not in lab.wsiwiec.com: the cluster signs that zone with DNSSEC, which ANAME doesn't support).
 #   lab.wsiwiec.com  internal only: everything in it is answered here.
 #   wsiwiec.com      public domain: names listed here are answered here, any other name would be looked up
-#                    on the internet. Today "*" sends every name to externum, like AdGuard did, so your own
-#                    devices reach it directly instead of through the internet.
-# The 10.20.0.53/.100/.101 addresses are today's komoda/externum/internum (temporary, on torus).
+#                    on the internet. Wildcards point at the current Caddy proxy so local devices
+#                    reach retained applications directly.
 dns_zones:
   lab.wsiwiec.com:
     type: primary
@@ -59,18 +58,11 @@ dns_zones:
       - { name: kestrel, type: A, value: "{{ hostvars.kestrel.address }}" }
       - { name: torus, type: A, value: "{{ hostvars.torus.address }}" }
       - { name: proxmox.raw, type: A, value: 10.1.0.2 } # kestrel's web UI (old name, kept)
-      - { name: core, type: A, value: 10.20.0.53 } # komoda
-      - { name: internum, type: A, value: 10.20.0.101 }
-      - { name: externum, type: A, value: 10.20.0.100 }
-      - { name: valkey.core, type: CNAME, value: core.lab.wsiwiec.com }
-      - { name: adguard, type: CNAME, value: core.lab.wsiwiec.com }
-      - { name: proxmox, type: CNAME, value: core.lab.wsiwiec.com }
-      - { name: whoami_core, type: CNAME, value: core.lab.wsiwiec.com }
-      - { name: "@", type: A, value: 10.20.0.101 } # internum (no ANAME: this zone is DNSSEC-signed)
-      - { name: "*", type: A, value: 10.20.0.101 } # internum
+      - { name: "@", type: A, value: "{{ hostvars[groups.proxy | first].address }}" }
+      - { name: "*", type: A, value: "{{ hostvars[groups.proxy | first].address }}" }
   wsiwiec.com:
     type: forwarder # our records first, the rest from the internet
     records:
       - { name: cruise, type: A, value: "{{ hostvars[groups.proxy | first].address }}" }
-      - { name: "@", type: ANAME, value: externum.lab.wsiwiec.com }
-      - { name: "*", type: A, value: 10.20.0.100 } # externum
+      - { name: "@", type: ANAME, value: zoltan.lab.wsiwiec.com }
+      - { name: "*", type: A, value: "{{ hostvars[groups.proxy | first].address }}" }
