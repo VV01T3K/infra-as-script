@@ -2,6 +2,20 @@
 
 Prepared 2026-10-05. This document records the user's agreed target and implementation sequence. It supersedes the initial proposal to reproduce the old `core/internum/externum` layout. (At the time of writing implementation had not started; see "Current state and next steps" below for where things stand.)
 
+## Legacy LXC retirement, 2026-10-09
+
+This section supersedes the pending-deployment and retirement notes below. ResearchCruise PRs #445, #446 and #447 are merged. The staging workflow deployed commit `a06b817b05b2b432dfc00ab3335f6518f57c2f69` through Cloudflare and Arcane successfully, and `STAGING_DEPLOY_ENABLED=true`. Arcane maps `docker/compose.staging.yaml` with polling disabled. DB/backend use the implicit default network; frontend also joins Caddy. The two unused old application networks were removed.
+
+On torus, komoda CT 101, internum CT 201 and externum CT 301 were gracefully shut down and set to `onboot=0`. Their root disks, Docker volumes and guest definitions remain intact. CT 105 interloper was not changed. Old services outside the retained target are now offline, including AdGuard/Unbound, Komodo, n8n, Authelia, Uptime Kuma, Qdrant, Excalidraw and IT-Tools. CloudBeaver and the stale original Cruise writers remain stopped.
+
+Before shutdown, the router's live Personal/Infra DHCP settings were verified to use Technitium at 10.20.0.54/.55, with no old addresses in the router network/settings responses. The old AdGuard query-log sample had no requests in the last ten minutes. Active Docker environments, labels, commands, extra hosts and resolver settings had no legacy address references. DNS apex/wildcard records now point to zoltan; legacy host/alias records were removed from the declaration and both live DNS servers. The Caddy Komodo procedure relay was removed. ResearchCruise GitHub webhook 589865153 was disabled; deployment uses the tested GitHub workflow instead.
+
+A static Caddy reload briefly removed Docker-discovered Cruise routing. Restarting the same Caddy container restored discovery with the obsolete relay absent. All subsequent checks passed. Caddy was the only retained infrastructure container restarted during retirement.
+
+After each guest stopped, Cruise, Arcane, CLIProxy, PDM and OMV returned HTTP 200, and NAS port 445 was reachable. With all three stopped, both DNS servers resolved retained/internal wildcard names to 10.20.0.10 and resolved external names. Public Cloudflare Cruise checks passed: root/health/version 200, anonymous user 401, signed-token user 200. Cruise container identities and database startup time remained unchanged during retirement; the existing volume and all 65 table counts, totaling 1,217 rows, matched the pre-retirement baseline.
+
+Recovery snapshots on torus are root-only under `/root/legacy-retirement-20261009`: each guest's pre-retirement configuration and full Docker inspection. The removed Caddy route is backed up at the same directory on zoltan. No guest was destroyed and no volume was deleted. If recovering an old service, inspect its saved configuration first and keep the original Cruise DB/backend/frontend stopped. The new database is authoritative; starting the old writers or old deployment webhook can create divergent data. Existing two-disk native Cruise backups remain available. Scheduled/off-site backups and eventual deletion of the retired guest disks are separate work.
+
 ## Cloudflared cutover, 2026-10-08
 
 Cloudflared now runs on zoltan with four ready Cloudflare connections. The original connector on externum is stopped. Public checks, forced through public Cloudflare IPs rather than split DNS, passed after the original stopped: Research Cruise health/version 200, anonymous user 401, invalid Arcane deployment key 401. Caddy's live access log confirmed traffic from the dedicated connector address and the real visitor IP. No Research Cruise container or volume was recreated. CloudBeaver remains stopped.
