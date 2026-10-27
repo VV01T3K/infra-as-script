@@ -31,6 +31,7 @@ services:
     labels:
       caddy: "{{ arcane_host }}"
       caddy.reverse_proxy: "{{ '{{' }}upstreams 3552{{ '}}' }}"
+      com.getarcaneapp.arcane.updater: "false" # pinned in versions.yml
     restart: unless-stopped
 
 networks:

@@ -25,6 +25,8 @@ services:
       - /tmp:size=1m,mode=1777
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    labels:
+      com.getarcaneapp.arcane.updater: "false" # built locally, nothing to pull
 
 volumes:
   frog_keepalive_ssh:

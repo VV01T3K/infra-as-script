@@ -17,6 +17,7 @@ services:
     labels:
       caddy: "{{ cliproxy_host }}"
       caddy.reverse_proxy: "{{ '{{' }}upstreams 8317{{ '}}' }}"
+      com.getarcaneapp.arcane.updater: "false" # pinned in versions.yml
     restart: unless-stopped
 
 networks:

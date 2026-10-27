@@ -2,6 +2,14 @@
 
 Prepared 2026-10-05. This document records the user's agreed target and implementation sequence. It supersedes the initial proposal to reproduce the old `core/internum/externum` layout. (At the time of writing implementation had not started; see "Current state and next steps" below for where things stand.)
 
+## Arcane auto-update, 2026-10-27 (code only, not applied)
+
+The live Arcane manager reported v2.17.0 (`/api/app-version`) while `versions.yml` still pinned v2.15.0; it was updated outside the repo, presumably from the UI. `arcane_version` is now v2.17.0, so stage 5 no longer tries to downgrade it. Agents follow the same variable and will be upgraded on the next `--tags agents` run; their live versions were not checked.
+
+The owner chose automatic updates with a delay. On zoltan (environment 0) Arcane now checks hourly and installs at 04:00 images that have been out for 72 hours. Only cloudflared and CrowdSec are on `latest`. Arcane, Caddy, CLIProxy, Valkey and Frog carry `com.getarcaneapp.arcane.updater=false`; the Research Cruise staging containers are excluded by name, because its labels live in its own repository and its staging workflow deploys it. Other environments keep Arcane's default (off). `cloudflared_image` in the service secrets is no longer used; `scripts/migrate-cloudflared.py` still writes it for the historical cutover procedure.
+
+Applying needs `mise run services --tags arcane,cloudflared,proxy,cliproxy` (recreates those containers for the labels) and manual Arcane syncs of the valkey, frog-keepalive and crowdsec stacks.
+
 ## Legacy LXC retirement, 2026-10-09
 
 This section supersedes the pending-deployment and retirement notes below. ResearchCruise PRs #445, #446 and #447 are merged. The staging workflow deployed commit `a06b817b05b2b432dfc00ab3335f6518f57c2f69` through Cloudflare and Arcane successfully, and `STAGING_DEPLOY_ENABLED=true`. Arcane maps `docker/compose.staging.yaml` with polling disabled. DB/backend use the implicit default network; frontend also joins Caddy. The two unused old application networks were removed.

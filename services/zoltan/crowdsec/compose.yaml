@@ -1,7 +1,7 @@
 # Restore the configuration and a consistent SQLite snapshot before startup.
 services:
   crowdsec:
-    image: crowdsecurity/crowdsec:v1.8.1@sha256:0f2523fa61ef507f15d953045cface490cc880670c62f2755ced17524107f71a
+    image: crowdsecurity/crowdsec:latest # updated by Arcane after 72 hours (see stage 5 arcane_settings)
     container_name: crowdsec
     hostname: crowdsec
     restart: unless-stopped

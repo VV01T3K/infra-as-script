@@ -21,6 +21,8 @@ services:
       retries: 6
     volumes:
       - valkey_certificates:/data
+    labels:
+      com.getarcaneapp.arcane.updater: "false" # holds the certificates; update deliberately
     networks: [security]
     security_opt: [no-new-privileges:true]
 
