@@ -1,7 +1,8 @@
 # The connector shares only its private ingress network with Caddy.
 services:
   cloudflared:
-    image: {{ service_secrets.cloudflared_image | to_json }}
+    # Updated by Arcane once a release has been out for 72 hours (see arcane_settings in main.yml).
+    image: cloudflare/cloudflared:latest
     container_name: cloudflared
     command: [tunnel, --no-autoupdate, --metrics, "0.0.0.0:2000", run]
     environment:

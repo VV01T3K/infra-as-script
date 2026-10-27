@@ -127,7 +127,15 @@
       timeFormat: 24h
     arcane_settings: # global settings ("0" = the manager's own environment); values are strings
       enableGravatar: "false" # no avatar requests from the browser to gravatar.com
-      autoUpdate: "false" # versions are pinned in this repo; Arcane must not update containers by itself
+      # Images on a floating tag (cloudflared, CrowdSec) are updated by Arcane once a new image has been
+      # out for 72 hours. Pinned images and containers labelled com.getarcaneapp.arcane.updater=false
+      # are left alone; the staging stack's labels live in its own repository, so it is excluded by name.
+      pollingEnabled: "true"
+      pollingInterval: "0 0 * * * *" # cron with seconds: check hourly
+      autoUpdate: "true"
+      autoUpdateInterval: "0 0 4 * * *" # install at 04:00
+      autoUpdateDelay: "72" # hours
+      autoUpdateExcludedContainers: researchcruiseapp-db,researchcruiseapp-backend,researchcruiseapp-frontend
   tasks:
     - name: Deploy Arcane
       ansible.builtin.include_tasks: tasks/compose.yml

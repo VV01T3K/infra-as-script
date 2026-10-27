@@ -27,6 +27,8 @@ services:
       - ./backends:/etc/caddy/backends:ro # routes to other guests' web UIs (end of stage 5)
       - data:/data # certificates
       - config:/config
+    labels:
+      com.getarcaneapp.arcane.updater: "false" # built here from versions.yml, nothing to pull
     networks:
       caddy: {}
 {% if caddy_security_enabled | default(false) | bool %}
